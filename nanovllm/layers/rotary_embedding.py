@@ -49,13 +49,28 @@ class RotaryEmbedding(nn.Module):
 
 
 @lru_cache(1)
-def get_rope(
+def _get_rope(
     head_size: int,
     rotary_dim: int,
     max_position: int,
     base: float,
-    rope_scaling: dict | None = None,
 ):
-    assert rope_scaling is None
     rotary_emb = RotaryEmbedding(head_size, rotary_dim, max_position, base)
     return rotary_emb
+
+
+def get_rope(
+    head_size: int,
+    rotary_dim: int,
+    max_position: int,
+    base: float | None,
+    rope_scaling: dict | None = None,
+):
+    if rope_scaling is not None:
+        rope_type = rope_scaling.get("rope_type", rope_scaling.get("type", "default"))
+        if rope_type != "default":
+            raise NotImplementedError(f"RoPE type {rope_type!r} is not supported")
+        base = rope_scaling.get("rope_theta", base)
+    if base is None:
+        raise ValueError("RoPE theta is missing from the model configuration")
+    return _get_rope(head_size, rotary_dim, max_position, float(base))
