@@ -52,7 +52,17 @@ def test_partial_chunk_is_unpublished_until_the_block_is_full(block_size: int):
 
 @pytest.mark.parametrize(
     "operation",
-    ["get_token_layout", "allocate", "deallocate", "can_append", "may_append"],
+    [
+        "match_prefix",
+        "claim_prefix",
+        "allocate_new",
+        "get_token_layout",
+        "allocate",
+        "deallocate",
+        "num_blocks_to_append",
+        "can_append",
+        "may_append",
+    ],
 )
 def test_all_sequence_entrypoints_reject_mismatched_block_size(operation: str):
     manager = BlockManager(num_blocks=2, block_size=16)
@@ -60,8 +70,10 @@ def test_all_sequence_entrypoints_reject_mismatched_block_size(operation: str):
     seq.num_new_tokens = 1
 
     with pytest.raises(AssertionError, match="does not match"):
-        if operation == "can_append":
-            manager.can_append(seq, 1)
+        if operation in ("can_append", "num_blocks_to_append"):
+            getattr(manager, operation)(seq, 1)
+        elif operation == "claim_prefix":
+            manager.claim_prefix(seq, [])
         else:
             getattr(manager, operation)(seq)
 

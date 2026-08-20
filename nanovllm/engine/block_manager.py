@@ -82,65 +82,133 @@ class BlockManager:
         """
         return len(self.free_block_ids) >= (num_tokens + self.block_size - 1) // self.block_size
 
-    def get_token_layout(self, seq: Sequence):
-        """
-        Only for seq in the waiting queue.
-        """
-        self._assert_block_size(seq)
-        assert not seq.block_table
-        num_new_tokens = 0
-        num_new_computed_tokens_in_used = 0
-        num_new_computed_tokens_in_free = 0
-        h = -1
-        cache_miss = False
-        for i in range(seq.num_blocks):
-            token_ids = seq.block(i)
-            h = self.compute_hash(token_ids, h) if len(token_ids) == self.block_size else -1
-            block_id = self.hash_to_block_id.get(h, -1)
-            if block_id == -1 or self.blocks[block_id].token_ids != token_ids or i == seq.num_blocks - 1:
-                cache_miss = True
-            if cache_miss:
-                num_new_tokens += len(token_ids)
-            else:
-                if block_id in self.used_block_ids:
-                    num_new_computed_tokens_in_used += len(token_ids)
-                else:
-                    num_new_computed_tokens_in_free += len(token_ids)
-        return num_new_computed_tokens_in_used, num_new_computed_tokens_in_free, num_new_tokens
+    def _validate_claimed_prefix(self, seq: Sequence) -> int:
+        assert seq.num_cached_tokens == len(seq.block_table) * self.block_size
+        prefix_hash = -1
+        for block_index, block_id in enumerate(seq.block_table):
+            assert 0 <= block_id < len(self.blocks)
+            token_ids = seq.block(block_index)
+            assert len(token_ids) == self.block_size
+            prefix_hash = self.compute_hash(token_ids, prefix_hash)
+            block = self.blocks[block_id]
+            assert block_id in self.used_block_ids
+            assert block_id not in self.free_block_ids
+            assert block.ref_count > 0
+            assert block.hash == prefix_hash
+            assert block.token_ids == token_ids
+        return prefix_hash
 
-    def allocate(self, seq: Sequence):
-        """
-        Only for seq in the waiting queue.
-        """
+    def match_prefix(
+        self,
+        seq: Sequence,
+        max_blocks: int | None = None,
+    ) -> list[int]:
         self._assert_block_size(seq)
-        assert not seq.block_table
-        h = -1
-        # allocate new_computed_blocks
-        for i in range(seq.num_blocks):
-            token_ids = seq.block(i)
-            candidate_hash = (
-                self.compute_hash(token_ids, h)
-                if len(token_ids) == self.block_size
-                else -1
+        if max_blocks is not None:
+            assert max_blocks >= 0
+
+        prefix_hash = self._validate_claimed_prefix(seq)
+        start = len(seq.block_table)
+        stop = max(start, seq.num_blocks - 1)
+        if max_blocks is not None:
+            stop = min(stop, start + max_blocks)
+
+        matched = []
+        for block_index in range(start, stop):
+            token_ids = seq.block(block_index)
+            if len(token_ids) != self.block_size:
+                break
+            block_hash = self.compute_hash(token_ids, prefix_hash)
+            block_id = self.hash_to_block_id.get(block_hash, -1)
+            if not 0 <= block_id < len(self.blocks):
+                break
+            block = self.blocks[block_id]
+            is_free = block_id in self.free_block_ids
+            is_used = block_id in self.used_block_ids
+            if (
+                block.hash != block_hash
+                or block.token_ids != token_ids
+                or is_free == is_used
+                or (is_free and block.ref_count != 0)
+                or (is_used and block.ref_count <= 0)
+            ):
+                break
+            matched.append(block_id)
+            prefix_hash = block_hash
+        return matched
+
+    def claim_prefix(self, seq: Sequence, block_ids: list[int]) -> None:
+        self._assert_block_size(seq)
+        prefix_hash = self._validate_claimed_prefix(seq)
+        start = len(seq.block_table)
+        planned = list(block_ids)
+        assert len(set(planned)) == len(planned)
+
+        claims = []
+        for offset, block_id in enumerate(planned):
+            block_index = start + offset
+            assert block_index < seq.num_blocks - 1
+            assert 0 <= block_id < len(self.blocks)
+            token_ids = seq.block(block_index)
+            assert len(token_ids) == self.block_size
+            block_hash = self.compute_hash(token_ids, prefix_hash)
+            assert self.hash_to_block_id.get(block_hash) == block_id, (
+                "prefix plan is stale: hash mapping changed"
             )
-            block_id = self.hash_to_block_id.get(candidate_hash, -1)
-            if block_id == -1 or self.blocks[block_id].token_ids != token_ids or i == seq.num_blocks - 1:
-                break               # cache miss
-            seq.num_cached_tokens += self.block_size
-            if block_id in self.used_block_ids:
+            block = self.blocks[block_id]
+            is_free = block_id in self.free_block_ids
+            is_used = block_id in self.used_block_ids
+            assert is_free != is_used, "prefix plan is stale: block state changed"
+            assert block.hash == block_hash, "prefix plan is stale: hash changed"
+            assert block.token_ids == token_ids, (
+                "prefix plan is stale: tokens changed"
+            )
+            assert (is_free and block.ref_count == 0) or (
+                is_used and block.ref_count > 0
+            )
+            claims.append((block_id, block_hash, token_ids, is_free))
+            prefix_hash = block_hash
+
+        for block_id, block_hash, token_ids, is_free in claims:
+            if is_free:
+                block = self._allocate_block(block_id)
+            else:
                 block = self.blocks[block_id]
                 block.ref_count += 1
-            else:
-                block = self._allocate_block(block_id)
-            block.update(candidate_hash, token_ids)
-            self.hash_to_block_id[candidate_hash] = block_id
+            block.update(block_hash, token_ids)
+            self.hash_to_block_id[block_hash] = block_id
             seq.block_table.append(block_id)
-            h = candidate_hash
+            seq.num_cached_tokens += self.block_size
+
+    def get_token_layout(self, seq: Sequence):
+        """Compatibility wrapper for the legacy waiting scheduler."""
+        block_ids = self.match_prefix(seq)
+        num_used_tokens = sum(
+            self.block_size
+            for block_id in block_ids
+            if block_id in self.used_block_ids
+        )
+        num_free_tokens = len(block_ids) * self.block_size - num_used_tokens
+        num_new_tokens = (
+            len(seq) - seq.num_cached_tokens - len(block_ids) * self.block_size
+        )
+        assert num_new_tokens >= 0
+        return num_used_tokens, num_free_tokens, num_new_tokens
+
+    def allocate_new(self, seq: Sequence) -> None:
+        """Allocate only the uncached suffix selected for this step."""
+        self._assert_block_size(seq)
+        h = self._validate_claimed_prefix(seq)
+        assert seq.num_new_tokens >= 0
+        context_end = seq.num_cached_tokens + seq.num_new_tokens
+        assert context_end <= len(seq)
+        required_blocks = (
+            seq.num_new_tokens + self.block_size - 1
+        ) // self.block_size
+        assert required_blocks <= len(self.free_block_ids)
         
         # Hash only tokens committed to this scheduling step. A partial block
         # must remain unpublished until may_append observes it as complete.
-        context_end = seq.num_cached_tokens + seq.num_new_tokens
-        h = self.blocks[seq.block_table[-1]].hash if seq.block_table else -1
         for i in range(seq.num_cached_tokens, context_end, self.block_size):
             token_ids = seq[i: min(i + self.block_size, context_end)]
             block_hash = (
@@ -155,6 +223,13 @@ class BlockManager:
                 self.hash_to_block_id[block_hash] = block_id
             seq.block_table.append(block_id)
             h = block_hash
+
+    def allocate(self, seq: Sequence) -> None:
+        """Compatibility wrapper for the legacy waiting scheduler."""
+        block_ids = self.match_prefix(seq)
+        self.claim_prefix(seq, block_ids)
+        self.allocate_new(seq)
+
 
 
     def deallocate(self, seq: Sequence):
@@ -171,18 +246,23 @@ class BlockManager:
         seq.num_new_tokens = 0
         seq.block_table.clear()
 
+    def num_blocks_to_append(
+        self, seq: Sequence, num_new_tokens: int
+    ) -> int:
+        self._assert_block_size(seq)
+        assert num_new_tokens >= 0
+        target_blocks = (
+            seq.num_cached_tokens + num_new_tokens + self.block_size - 1
+        ) // self.block_size
+        return max(target_blocks - len(seq.block_table), 0)
+
     def can_append(self, seq: Sequence, num_new_tokens: int) -> bool:
         """
         Only for seq in the running queue.
         """
-        self._assert_block_size(seq)
-        last_computed_block_capacity = self.block_size - (seq.num_cached_tokens % self.block_size)
-        if last_computed_block_capacity == self.block_size:
-            last_computed_block_capacity = 0
-        if (num_new_tokens - last_computed_block_capacity + self.block_size - 1) // self.block_size \
-            <= len(self.free_block_ids):
-            return True
-        return False
+        return self.num_blocks_to_append(
+            seq, num_new_tokens
+        ) <= len(self.free_block_ids)
 
     def may_append(self, seq: Sequence):
         """

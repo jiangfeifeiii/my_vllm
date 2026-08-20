@@ -188,14 +188,13 @@ def test_flashinfer_prefill_decode_prefix_reuse_and_mixed_batch():
 
         llm.scheduler.schedule = recording_schedule
         step_outputs, _ = llm.step()
-        mixed_work = {
-            seq_id: num_new_tokens
+        mixed_work = [
+            (seq_id, num_new_tokens)
             for seq_id, num_new_tokens, _ in scheduled_batches[0]
-        }
-        assert mixed_work == {
-            decode_id: 1,
-            prefill_id: len(prefill_prompt),
-        }
+        ]
+        assert mixed_work == [
+            (prefill_id, len(prefill_prompt)), (decode_id, 1)
+        ]
 
         finished = dict(step_outputs)
         for _ in range(16):
