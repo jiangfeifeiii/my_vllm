@@ -1,5 +1,7 @@
 from types import SimpleNamespace
 
+import pytest
+
 from nanovllm.engine.scheduler import Scheduler
 from nanovllm.engine.sequence import Sequence, SequenceStatus
 from nanovllm.sampling_params import SamplingParams
@@ -73,6 +75,13 @@ def _assert_block_invariants(scheduler: Scheduler) -> None:
         assert len(block.token_ids) == BLOCK_SIZE
 
 
+
+@pytest.mark.parametrize("max_tokens", [0, -1, 1.5, False])
+def test_sampling_params_require_positive_integer_max_tokens(max_tokens):
+    with pytest.raises(AssertionError, match="positive integer"):
+        SamplingParams(max_tokens=max_tokens)
+
+
 def test_waiting_to_single_chunked_to_decode_to_finished():
     scheduler = _scheduler(token_budget=8, max_num_seqs=1)
     params = SamplingParams(max_tokens=2, ignore_eos=True)
@@ -109,6 +118,69 @@ def test_waiting_to_single_chunked_to_decode_to_finished():
     assert seq.status is SequenceStatus.FINISHED
     assert scheduler.is_finished()
     assert not seq.block_table
+    _assert_block_invariants(scheduler)
+
+
+
+def test_unchunked_request_over_budget_fails_actionably():
+    scheduler = _scheduler(token_budget=8, chunked=False)
+    seq = Sequence(list(range(9)), block_size=BLOCK_SIZE)
+    scheduler.add(seq)
+
+    with pytest.raises(ValueError, match="enable chunked_prefill"):
+        scheduler.schedule()
+
+    assert list(scheduler.waiting) == [seq]
+    assert seq.block_table == []
+    _assert_block_invariants(scheduler)
+
+
+
+def test_completed_chunk_waiting_prefill_and_decode_share_one_p_d_batch():
+    scheduler = _scheduler(
+        num_blocks=6,
+        token_budget=10,
+        max_num_seqs=3,
+    )
+    chunked = Sequence(
+        list(range(20)),
+        SamplingParams(max_tokens=2, ignore_eos=True),
+        block_size=BLOCK_SIZE,
+    )
+    _allocate_new(scheduler, chunked, BLOCK_SIZE)
+    chunked.num_cached_tokens = BLOCK_SIZE
+    chunked.num_new_tokens = 0
+    chunked.status = SequenceStatus.RUNNING
+    scheduler.chunked_req = chunked
+
+    decode = _add_decode(scheduler, 4000)
+    waiting = Sequence(
+        list(range(5000, 5005)),
+        SamplingParams(max_tokens=2, ignore_eos=True),
+        block_size=BLOCK_SIZE,
+    )
+    scheduler.add(waiting)
+
+    scheduled = scheduler.schedule()
+
+    assert scheduled == [chunked, waiting, decode]
+    assert scheduler.num_scheduled_prefill_seqs == 2
+    assert scheduler.num_scheduled_prefill_tokens == 9
+    assert [seq.num_new_tokens for seq in scheduled] == [4, 5, 1]
+
+    scheduler.postprocess(
+        scheduled,
+        [71_001, 71_002, 71_003],
+        [0, 1, 2],
+    )
+    assert scheduler.chunked_req is None
+    assert list(scheduler.running) == [decode, chunked, waiting]
+    assert [seq.num_cached_tokens for seq in scheduled] == [20, 5, 17]
+    _assert_block_invariants(scheduler)
+
+    for seq in list(scheduler.running):
+        scheduler.block_manager.deallocate(seq)
+    scheduler.running.clear()
     _assert_block_invariants(scheduler)
 
 

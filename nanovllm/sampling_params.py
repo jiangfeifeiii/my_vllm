@@ -9,3 +9,6 @@ class SamplingParams:
 
     def __post_init__(self):
         assert self.temperature > 1e-10, "greedy sampling is not permitted"
+        assert type(self.max_tokens) is int and self.max_tokens > 0, (
+            "max_tokens must be a positive integer"
+        )

@@ -71,13 +71,15 @@ class FlashInferAttentionBackendTest(TestCase):
     block_size = 16
     dtype = torch.bfloat16
 
-    def _backend(self) -> FlashInferAttentionBackend:
+    def _backend(
+        self, dtype: torch.dtype | None = None
+    ) -> FlashInferAttentionBackend:
         return FlashInferAttentionBackend(
             self.num_q_heads,
             self.num_kv_heads,
             self.head_dim,
             self.block_size,
-            self.dtype,
+            dtype or self.dtype,
         )
 
     def test_unified_bf16_gqa_page_size_16_matches_reference(self):
@@ -152,6 +154,111 @@ class FlashInferAttentionBackendTest(TestCase):
         self.assertEqual(output.dtype, self.dtype)
         torch.testing.assert_close(output, expected, atol=2e-2, rtol=2e-2)
 
+    def test_phase_specialized_pure_prefill_decode_and_mixed(self):
+        cases = (
+            ("pure_prefill", (5, 3), (21, 13), 2),
+            ("pure_decode", (1, 1), (21, 13), 0),
+            ("mixed", (5, 1, 1), (21, 13, 18), 1),
+        )
+        for dtype in (torch.float16, torch.bfloat16):
+            backend = self._backend(dtype)
+            self.assertEqual(
+                backend.prefill_wrapper._float_workspace_buffer.data_ptr(),
+                backend.workspace.data_ptr(),
+            )
+            self.assertEqual(
+                backend.decode_wrapper._float_workspace_buffer.data_ptr(),
+                backend.workspace.data_ptr(),
+            )
+            for case_index, (
+                phase,
+                query_lengths,
+                kv_lengths,
+                num_prefill_seqs,
+            ) in enumerate(cases):
+                with self.subTest(dtype=dtype, phase=phase):
+                    torch.manual_seed(307 + case_index)
+                    context, q, k_cache, v_cache = _phase_case(
+                        dtype,
+                        query_lengths,
+                        kv_lengths,
+                        num_prefill_seqs,
+                    )
+                    unused_k = q.new_empty(
+                        (0, self.num_kv_heads, self.head_dim)
+                    )
+                    unused_v = torch.empty_like(unused_k)
+
+                    backend.plan(context)
+                    output = backend.forward(
+                        q,
+                        unused_k,
+                        unused_v,
+                        k_cache,
+                        v_cache,
+                        context,
+                    )
+                    expected = _paged_attention_reference(
+                        q,
+                        k_cache,
+                        v_cache,
+                        context.page_kv_indptr,
+                        context.page_indices,
+                        query_lengths,
+                        kv_lengths,
+                    )
+                    tolerance = 5e-3 if dtype == torch.float16 else 2e-2
+
+                    self.assertEqual(
+                        backend._num_prefill_seqs, num_prefill_seqs
+                    )
+                    self.assertEqual(
+                        backend._num_prefill_tokens,
+                        sum(query_lengths[:num_prefill_seqs]),
+                    )
+                    self.assertEqual(
+                        backend._num_decode_seqs,
+                        len(query_lengths) - num_prefill_seqs,
+                    )
+                    self.assertEqual(
+                        backend._num_decode_tokens,
+                        sum(query_lengths[num_prefill_seqs:]),
+                    )
+                    torch.testing.assert_close(
+                        output,
+                        expected,
+                        atol=tolerance,
+                        rtol=tolerance,
+                    )
+
+                    if phase == "mixed":
+                        second_q = torch.randn_like(q)
+                        second_k_cache = torch.randn_like(k_cache)
+                        second_v_cache = torch.randn_like(v_cache)
+                        second_output = backend.forward(
+                            second_q,
+                            unused_k,
+                            unused_v,
+                            second_k_cache,
+                            second_v_cache,
+                            context,
+                        )
+                        second_expected = _paged_attention_reference(
+                            second_q,
+                            second_k_cache,
+                            second_v_cache,
+                            context.page_kv_indptr,
+                            context.page_indices,
+                            query_lengths,
+                            kv_lengths,
+                        )
+                        torch.testing.assert_close(
+                            second_output,
+                            second_expected,
+                            atol=tolerance,
+                            rtol=tolerance,
+                        )
+
     def test_cacheless_warmup_uses_ragged_fallback(self):
         torch.manual_seed(223)
         sequence_lengths = (3, 1)
@@ -185,7 +292,6 @@ class FlashInferAttentionBackendTest(TestCase):
         self.assertFalse(backend._planned)
         torch.testing.assert_close(output, expected, atol=2e-2, rtol=2e-2)
 
-
     def test_paged_forward_requires_plan(self):
         backend = self._backend()
         q = torch.empty(
@@ -196,6 +302,50 @@ class FlashInferAttentionBackendTest(TestCase):
         )
         with self.assertRaisesRegex(RuntimeError, r"plan\(context\)"):
             backend.forward(q, q[:, :4], q[:, :4], cache, cache, object())
+
+
+def _phase_case(
+    dtype: torch.dtype,
+    query_lengths: tuple[int, ...],
+    kv_lengths: tuple[int, ...],
+    num_prefill_seqs: int,
+):
+    q_indptr = [0]
+    kv_indptr = [0]
+    last_page_len = []
+    for query_length, kv_length in zip(query_lengths, kv_lengths):
+        q_indptr.append(q_indptr[-1] + query_length)
+        kv_indptr.append(kv_indptr[-1] + (kv_length + 15) // 16)
+        last_page_len.append((kv_length - 1) % 16 + 1)
+
+    page_q_indptr = torch.tensor(
+        q_indptr, device="cuda", dtype=torch.int32
+    )
+    page_kv_indptr = torch.tensor(
+        kv_indptr, device="cuda", dtype=torch.int32
+    )
+    page_indices = torch.arange(
+        kv_indptr[-1], device="cuda", dtype=torch.int32
+    )
+    context = SimpleNamespace(
+        page_q_indptr=page_q_indptr,
+        page_kv_indptr=page_kv_indptr,
+        page_indices=page_indices,
+        page_last_page_len=torch.tensor(
+            last_page_len, device="cuda", dtype=torch.int32
+        ),
+        num_prefill_seqs=num_prefill_seqs,
+        num_prefill_tokens=sum(query_lengths[:num_prefill_seqs]),
+        num_decode_tokens=sum(query_lengths[num_prefill_seqs:]),
+    )
+    q = torch.randn(
+        q_indptr[-1], 16, 128, device="cuda", dtype=dtype
+    )
+    k_cache = torch.randn(
+        kv_indptr[-1], 16, 4, 128, device="cuda", dtype=dtype
+    )
+    v_cache = torch.randn_like(k_cache)
+    return context, q, k_cache, v_cache
 
 
 def _paged_attention_reference(
@@ -239,6 +389,7 @@ def _paged_attention_reference(
         query_start += query_length
     return torch.cat(outputs).to(q.dtype)
 
+
 def _ragged_attention_reference(
     q: torch.Tensor,
     k: torch.Tensor,
@@ -270,7 +421,6 @@ def _ragged_attention_reference(
         )
         start += length
     return torch.cat(outputs).to(q.dtype)
-
 
 
 if __name__ == "__main__":

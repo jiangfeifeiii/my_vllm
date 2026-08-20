@@ -160,6 +160,38 @@ def test_flashinfer_prefill_decode_prefix_reuse_and_mixed_batch():
         )
         _assert_generation(second_outputs, [2])
 
+        # Two cold requests share a full block in the same GPU batch. The
+        # follower reads the leader's page after the layer-wide KV store.
+        in_batch_prefix = list(range(6000, 6016))
+        llm.add_request(
+            in_batch_prefix + [6100],
+            _sampling_params(1),
+        )
+        llm.add_request(
+            in_batch_prefix + [6200],
+            _sampling_params(1),
+        )
+        leader, follower = list(llm.scheduler.waiting)
+        in_batch = llm.scheduler.schedule()
+        assert in_batch == [leader, follower]
+        shared_id = leader.block_table[0]
+        assert follower.block_table[0] == shared_id
+        assert block_manager.blocks[shared_id].ref_count == 2
+
+        token_ids, logits_indices = llm.model_runner.call(
+            "run",
+            in_batch,
+            llm.scheduler.num_scheduled_prefill_seqs,
+        )
+        llm.scheduler.postprocess(
+            in_batch,
+            token_ids,
+            logits_indices,
+        )
+        assert leader.is_finished and follower.is_finished
+        assert block_manager.blocks[shared_id].ref_count == 0
+        assert shared_id in block_manager.free_block_ids
+
         # Keep one request in decode, then admit a fresh prefill in the same step.
         decode_prompt = list(range(3000, 3012))
         llm.add_request(decode_prompt, _sampling_params(3))
@@ -195,6 +227,11 @@ def test_flashinfer_prefill_decode_prefix_reuse_and_mixed_batch():
         assert mixed_work == [
             (prefill_id, len(prefill_prompt)), (decode_id, 1)
         ]
+        backend = llm.model_runner.attention_backend
+        assert backend._num_prefill_seqs == 1
+        assert backend._num_prefill_tokens == len(prefill_prompt)
+        assert backend._num_decode_seqs == 1
+        assert backend._num_decode_tokens == 1
 
         finished = dict(step_outputs)
         for _ in range(16):

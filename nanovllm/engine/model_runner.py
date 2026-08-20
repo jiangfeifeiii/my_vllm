@@ -178,7 +178,25 @@ class ModelRunner:
         return block_tables
 
 
-    def prepare_model_input(self, seqs: list[Sequence]):
+    def prepare_model_input(
+        self,
+        seqs: list[Sequence],
+        num_prefill_seqs: int | None = None,
+    ):
+        if num_prefill_seqs is None:
+            num_prefill_seqs = len(seqs)
+        assert 0 <= num_prefill_seqs <= len(seqs)
+        num_prefill_tokens = sum(
+            seq.num_new_tokens for seq in seqs[:num_prefill_seqs]
+        )
+        num_decode_tokens = sum(
+            seq.num_new_tokens for seq in seqs[num_prefill_seqs:]
+        )
+        assert all(
+            seq.num_new_tokens == 1
+            for seq in seqs[num_prefill_seqs:]
+        ), "decode suffix must contain one query token per sequence"
+
         input_ids = []
         positions = []
         cu_seqlens_q = [0]
@@ -255,6 +273,9 @@ class ModelRunner:
             page_kv_indptr=page_kv_indptr,
             page_indices=page_indices,
             page_last_page_len=page_last_page_len,
+            num_prefill_seqs=num_prefill_seqs,
+            num_prefill_tokens=num_prefill_tokens,
+            num_decode_tokens=num_decode_tokens,
         )
         self.attention_backend.plan(get_context())
         return input_ids, positions
@@ -294,8 +315,15 @@ class ModelRunner:
             graph.replay()
             return self.model.compute_logits(graph_vars["outputs"][:bs])
 
-    def run(self, seqs: list[Sequence]) -> list[int]:
-        input_ids, positions = self.prepare_model_input(seqs)
+    def run(
+        self,
+        seqs: list[Sequence],
+        num_prefill_seqs: int | None = None,
+    ):
+        input_ids, positions = self.prepare_model_input(
+            seqs,
+            num_prefill_seqs=num_prefill_seqs,
+        )
         temperatures = self.prepare_sample(seqs) if self.rank == 0 else None
         logits = self.run_model(input_ids, positions)
         token_ids = self.sampler(logits, temperatures).tolist() if self.rank == 0 else None

@@ -26,6 +26,7 @@ class ModelRunnerMetadataTest(TestCase):
         self.runner.block_size = 16
 
         self.runner.attention_backend = _BackendRecorder()
+
     def test_mixed_prefix_extension_and_fresh_prefill_page_metadata(self):
         prefix_extend = Sequence(list(range(100, 119)), block_size=16)
         prefix_extend.num_cached_tokens = 16
@@ -62,6 +63,9 @@ class ModelRunnerMetadataTest(TestCase):
         )
         self.assertEqual(context.max_seqlen_q, 5)
         self.assertEqual(context.max_seqlen_k, 19)
+        self.assertEqual(context.num_prefill_seqs, 2)
+        self.assertEqual(context.num_prefill_tokens, 8)
+        self.assertEqual(context.num_decode_tokens, 0)
 
     def test_warmup_without_block_table_has_empty_page_metadata(self):
         warmup = Sequence([10, 11, 12, 13], block_size=16)
@@ -81,6 +85,36 @@ class ModelRunnerMetadataTest(TestCase):
         self.assertEqual(_tolist(context.context_lens), [4])
         self.assertIsNone(context.seq_need_compute_logits)
         self.assertIsNone(context.block_tables)
+        self.assertEqual(context.num_prefill_seqs, 1)
+        self.assertEqual(context.num_prefill_tokens, 4)
+        self.assertEqual(context.num_decode_tokens, 0)
+
+    def test_contiguous_prefill_decode_phase_boundary(self):
+        prefill = Sequence([1, 2, 3], block_size=16)
+        prefill.num_new_tokens = 3
+        prefill.block_table = [2]
+
+        decode = Sequence(list(range(100, 118)), block_size=16)
+        decode.num_cached_tokens = 17
+        decode.num_new_tokens = 1
+        decode.block_table = [4, 5]
+
+        input_ids, positions = self.runner.prepare_model_input(
+            [prefill, decode],
+            num_prefill_seqs=1,
+        )
+        context = get_context()
+
+        self.assertEqual(_tolist(input_ids), [1, 2, 3, 117])
+        self.assertEqual(_tolist(positions), [0, 1, 2, 17])
+        self.assertEqual(_tolist(context.page_q_indptr), [0, 3, 4])
+        self.assertEqual(_tolist(context.page_kv_indptr), [0, 1, 3])
+        self.assertEqual(_tolist(context.page_indices), [2, 4, 5])
+        self.assertEqual(_tolist(context.page_last_page_len), [3, 2])
+        self.assertEqual(_tolist(context.slot_mapping), [32, 33, 34, 81])
+        self.assertEqual(context.num_prefill_seqs, 1)
+        self.assertEqual(context.num_prefill_tokens, 3)
+        self.assertEqual(context.num_decode_tokens, 1)
 
 
 if __name__ == "__main__":

@@ -11,6 +11,7 @@ FLASHINFER_WORKSPACE_BYTES = 64 * 1024 * 1024
 
 _FLASHINFER_ATTENTION_IMPORT_ERROR: Exception | None = None
 _BatchPrefillWithPagedKVCacheWrapper = None
+_BatchDecodeWithPagedKVCacheWrapper = None
 FLASHINFER_ATTENTION_AVAILABLE = find_spec("flashinfer") is not None
 FLASHINFER_IMPORT_ERROR: Exception | None = None
 if not FLASHINFER_ATTENTION_AVAILABLE:
@@ -24,11 +25,15 @@ def _load_flashinfer_attention() -> None:
     global FLASHINFER_ATTENTION_AVAILABLE
     global FLASHINFER_IMPORT_ERROR
     global _FLASHINFER_ATTENTION_IMPORT_ERROR
+    global _BatchDecodeWithPagedKVCacheWrapper
     global _BatchPrefillWithPagedKVCacheWrapper
 
     if (
         not FLASHINFER_ATTENTION_AVAILABLE
-        or _BatchPrefillWithPagedKVCacheWrapper is not None
+        or (
+            _BatchPrefillWithPagedKVCacheWrapper is not None
+            and _BatchDecodeWithPagedKVCacheWrapper is not None
+        )
     ):
         return
     try:
@@ -40,9 +45,13 @@ def _load_flashinfer_attention() -> None:
                 f"{flashinfer_ops.FLASHINFER_IMPORT_ERROR}"
             )
         from flashinfer.prefill import BatchPrefillWithPagedKVCacheWrapper
+        from flashinfer.decode import BatchDecodeWithPagedKVCacheWrapper
 
         _BatchPrefillWithPagedKVCacheWrapper = (
             BatchPrefillWithPagedKVCacheWrapper
+        )
+        _BatchDecodeWithPagedKVCacheWrapper = (
+            BatchDecodeWithPagedKVCacheWrapper
         )
     except Exception as exc:  # FlashInfer remains an optional CUDA dependency.
         _FLASHINFER_ATTENTION_IMPORT_ERROR = exc
@@ -134,7 +143,7 @@ class LegacyFlashAttentionBackend(AttentionBackend):
 
 
 class FlashInferAttentionBackend(AttentionBackend):
-    """Unified paged prefill/decode backend using one plan for all layers."""
+    """Phase-specialized paged backend using one plan for all layers."""
 
     _PAGE_FIELDS = (
         "page_q_indptr",
@@ -181,9 +190,23 @@ class FlashInferAttentionBackend(AttentionBackend):
             kv_layout="NHD",
             backend="auto",
         )
+        self.decode_wrapper = _BatchDecodeWithPagedKVCacheWrapper(
+            self.workspace,
+            kv_layout="NHD",
+            backend="auto",
+        )
         self._planned = False
+        self._num_prefill_seqs = 0
+        self._num_prefill_tokens = 0
+        self._num_decode_seqs = 0
+        self._num_decode_tokens = 0
 
     def plan(self, context: Any) -> None:
+        self._planned = False
+        self._num_prefill_seqs = 0
+        self._num_prefill_tokens = 0
+        self._num_decode_seqs = 0
+        self._num_decode_tokens = 0
         metadata = [getattr(context, name, None) for name in self._PAGE_FIELDS]
         if all(item is None for item in metadata):
             # Model-memory profiling has no allocated KV cache. Its forward
@@ -214,20 +237,110 @@ class FlashInferAttentionBackend(AttentionBackend):
             return
 
         q_indptr, kv_indptr, indices, last_page_len = metadata
-        self.prefill_wrapper.plan(
-            q_indptr,
-            kv_indptr,
-            indices,
-            last_page_len,
-            self.num_q_heads,
-            self.num_kv_heads,
-            self.head_dim,
-            self.block_size,
-            causal=True,
-            q_data_type=self.dtype,
-            kv_data_type=self.dtype,
-            o_data_type=self.dtype,
-        )
+        batch_size = last_page_len.numel()
+        if (
+            q_indptr.ndim != 1
+            or kv_indptr.ndim != 1
+            or indices.ndim != 1
+            or last_page_len.ndim != 1
+        ):
+            raise ValueError("FlashInfer page metadata must be one-dimensional")
+        if (
+            q_indptr.numel() != batch_size + 1
+            or kv_indptr.numel() != batch_size + 1
+        ):
+            raise ValueError("page indptr lengths must equal batch_size + 1")
+        if int(q_indptr[0].item()) != 0 or int(kv_indptr[0].item()) != 0:
+            raise ValueError("page indptr tensors must start at zero")
+        if int(kv_indptr[-1].item()) != indices.numel():
+            raise ValueError("page_kv_indptr does not match page_indices")
+
+        num_prefill_seqs = getattr(context, "num_prefill_seqs", None)
+        if num_prefill_seqs is None:
+            num_prefill_seqs = batch_size
+        if (
+            isinstance(num_prefill_seqs, bool)
+            or not isinstance(num_prefill_seqs, int)
+        ):
+            raise TypeError("context.num_prefill_seqs must be an int")
+        if not 0 <= num_prefill_seqs <= batch_size:
+            raise ValueError("context.num_prefill_seqs is outside the batch")
+
+        expected_prefill_tokens = int(q_indptr[num_prefill_seqs].item())
+        num_prefill_tokens = getattr(context, "num_prefill_tokens", None)
+        if num_prefill_tokens is None:
+            num_prefill_tokens = expected_prefill_tokens
+        if (
+            isinstance(num_prefill_tokens, bool)
+            or not isinstance(num_prefill_tokens, int)
+        ):
+            raise TypeError("context.num_prefill_tokens must be an int")
+        if num_prefill_tokens != expected_prefill_tokens:
+            raise ValueError(
+                "context.num_prefill_tokens must equal "
+                "page_q_indptr[num_prefill_seqs]"
+            )
+
+        num_decode_seqs = batch_size - num_prefill_seqs
+        num_decode_tokens = getattr(context, "num_decode_tokens", None)
+        if num_decode_tokens is None:
+            num_decode_tokens = int(q_indptr[-1].item()) - num_prefill_tokens
+        if (
+            isinstance(num_decode_tokens, bool)
+            or not isinstance(num_decode_tokens, int)
+        ):
+            raise TypeError("context.num_decode_tokens must be an int")
+        if num_decode_tokens != num_decode_seqs:
+            raise ValueError(
+                "decode suffix must contain one query token per sequence"
+            )
+        if num_decode_seqs:
+            decode_q_lens = (
+                q_indptr[num_prefill_seqs + 1 :]
+                - q_indptr[num_prefill_seqs:-1]
+            )
+            if not bool(torch.all(decode_q_lens == 1).item()):
+                raise ValueError(
+                    "every sequence in the decode suffix must have q_len == 1"
+                )
+
+        prefill_page_end = int(kv_indptr[num_prefill_seqs].item())
+        if num_prefill_seqs:
+            self.prefill_wrapper.plan(
+                q_indptr[: num_prefill_seqs + 1],
+                kv_indptr[: num_prefill_seqs + 1],
+                indices[:prefill_page_end],
+                last_page_len[:num_prefill_seqs],
+                self.num_q_heads,
+                self.num_kv_heads,
+                self.head_dim,
+                self.block_size,
+                causal=True,
+                q_data_type=self.dtype,
+                kv_data_type=self.dtype,
+                o_data_type=self.dtype,
+            )
+        if num_decode_seqs:
+            decode_kv_indptr = (
+                kv_indptr[num_prefill_seqs:] - prefill_page_end
+            )
+            self.decode_wrapper.plan(
+                decode_kv_indptr,
+                indices[prefill_page_end:],
+                last_page_len[num_prefill_seqs:],
+                self.num_q_heads,
+                self.num_kv_heads,
+                self.head_dim,
+                self.block_size,
+                pos_encoding_mode="NONE",
+                q_data_type=self.dtype,
+                kv_data_type=self.dtype,
+                o_data_type=self.dtype,
+            )
+        self._num_prefill_seqs = num_prefill_seqs
+        self._num_prefill_tokens = num_prefill_tokens
+        self._num_decode_seqs = num_decode_seqs
+        self._num_decode_tokens = num_decode_tokens
         self._planned = True
 
     def forward(
@@ -255,9 +368,24 @@ class FlashInferAttentionBackend(AttentionBackend):
                 "once before running a paged batch"
             )
         _validate_flashinfer_inputs(self, q, k_cache, v_cache)
-        # K/V are stored into the cache by the layer before this call. One
-        # wrapper plan is therefore reusable for every transformer layer.
-        return self.prefill_wrapper.run(q, (k_cache, v_cache))
+        expected_tokens = self._num_prefill_tokens + self._num_decode_tokens
+        if q.size(0) != expected_tokens:
+            raise ValueError(
+                "query token count does not match the planned phase split"
+            )
+
+        cache = (k_cache, v_cache)
+        if self._num_prefill_seqs and self._num_decode_seqs:
+            prefill_output = self.prefill_wrapper.run(
+                q[: self._num_prefill_tokens], cache
+            )
+            decode_output = self.decode_wrapper.run(
+                q[self._num_prefill_tokens :], cache
+            )
+            return torch.cat((prefill_output, decode_output), dim=0)
+        if self._num_prefill_seqs:
+            return self.prefill_wrapper.run(q, cache)
+        return self.decode_wrapper.run(q, cache)
 
 
 def _has_cache(cache: torch.Tensor | None) -> bool:

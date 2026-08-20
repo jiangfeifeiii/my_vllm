@@ -16,6 +16,9 @@ class Context:
     page_kv_indptr: torch.Tensor | None = None
     page_indices: torch.Tensor | None = None
     page_last_page_len: torch.Tensor | None = None
+    num_prefill_seqs: int | None = None
+    num_prefill_tokens: int | None = None
+    num_decode_tokens: int | None = None
 
 
 _CONTEXT = Context()
@@ -38,6 +41,9 @@ def set_context(
     page_kv_indptr=None,
     page_indices=None,
     page_last_page_len=None,
+    num_prefill_seqs=None,
+    num_prefill_tokens=None,
+    num_decode_tokens=None,
 ):
     global _CONTEXT
     _CONTEXT = Context(
@@ -53,6 +59,9 @@ def set_context(
         page_kv_indptr=page_kv_indptr,
         page_indices=page_indices,
         page_last_page_len=page_last_page_len,
+        num_prefill_seqs=num_prefill_seqs,
+        num_prefill_tokens=num_prefill_tokens,
+        num_decode_tokens=num_decode_tokens,
     )
 
 

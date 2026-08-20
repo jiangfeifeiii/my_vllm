@@ -186,6 +186,11 @@ class Scheduler:
             remaining = len(seq) - cached_tokens
             assert remaining > 0
             if not self.enable_chunked and remaining > token_budget:
+                if remaining > self.max_num_batched_tokens:
+                    raise ValueError(
+                        "uncached prompt tokens exceed "
+                        "max_num_batched_tokens; enable chunked_prefill"
+                    )
                 break
             num_new_tokens = min(remaining, token_budget)
             if num_new_tokens <= 0:
@@ -290,7 +295,7 @@ class Scheduler:
             seq.append_token(token_id)
             if (
                 (not seq.ignore_eos and token_id == self.eos)
-                or seq.num_completion_tokens == seq.max_tokens
+                or seq.num_completion_tokens >= seq.max_tokens
                 or len(seq) >= self.max_model_len
             ):
                 if len(seq) >= self.max_model_len:

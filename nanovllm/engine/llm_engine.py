@@ -52,7 +52,11 @@ class LLMEngine:
 
     def step(self):
         seqs = self.scheduler.schedule()
-        token_ids, seq_need_compute_logits = self.model_runner.call("run", seqs)
+        token_ids, seq_need_compute_logits = self.model_runner.call(
+            "run",
+            seqs,
+            self.scheduler.num_scheduled_prefill_seqs,
+        )
         self.scheduler.postprocess(seqs, token_ids, seq_need_compute_logits)
         outputs = [(seq.seq_id, seq.completion_token_ids) for seq in seqs if seq.is_finished]
         num_total_tokens = sum(len(seq) for seq in seqs if seq.is_finished)
