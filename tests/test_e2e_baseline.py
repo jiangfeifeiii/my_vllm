@@ -39,6 +39,15 @@ def test_gpu_generation_baseline():
         llm = LLM(
             str(model_path),
             enforce_eager=True,
+            attention_backend="legacy",
+            kvcache_block_size=256,
+            operator_overrides={
+                "silu_and_mul": "native",
+                "rms_norm": "native",
+                "fused_add_rms_norm": "native",
+                "rotary_embedding": "native",
+                "kv_cache_store": "native",
+            },
             tensor_parallel_size=1,
             max_model_len=64,
             max_num_batched_tokens=64,

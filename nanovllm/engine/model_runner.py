@@ -7,6 +7,10 @@ from multiprocessing.shared_memory import SharedMemory
 from nanovllm.config import Config
 from nanovllm.engine.sequence import Sequence
 from nanovllm.models.qwen3 import Qwen3ForCausalLM
+from nanovllm.layers.attention_backend import (
+    FlashInferAttentionBackend,
+    LegacyFlashAttentionBackend,
+)
 from nanovllm.layers.sampler import Sampler
 from nanovllm.layers.operators import OperatorResolver, load_optional_providers
 from nanovllm.utils.context import set_context, get_context, reset_context
@@ -38,12 +42,36 @@ class ModelRunner:
             dtype=self.dtype,
             device_type="cuda",
         )
-        self.model = Qwen3ForCausalLM(hf_config, operator_resolver=self.operator_resolver)
+        backend_cls = (
+            FlashInferAttentionBackend
+            if config.attention_backend == "flashinfer"
+            else LegacyFlashAttentionBackend
+        )
+        head_dim = getattr(
+            hf_config,
+            "head_dim",
+            hf_config.hidden_size // hf_config.num_attention_heads,
+        )
+        self.attention_backend = backend_cls(
+            num_q_heads=hf_config.num_attention_heads // self.world_size,
+            num_kv_heads=hf_config.num_key_value_heads // self.world_size,
+            head_dim=head_dim,
+            block_size=self.block_size,
+            dtype=self.dtype,
+        )
+        self.use_cudagraph = (
+            not self.enforce_eager and self.attention_backend.supports_cudagraph
+        )
+        self.model = Qwen3ForCausalLM(
+            hf_config,
+            attention_backend=self.attention_backend,
+            operator_resolver=self.operator_resolver,
+        )
         load_model(self.model, config.model)
         self.sampler = Sampler()
         self.warmup_model()
         self.allocate_kv_cache()
-        if not self.enforce_eager:
+        if self.use_cudagraph:
             self.capture_cudagraph()
         torch.set_default_device("cpu")
         torch.set_default_dtype(default_dtype)
@@ -74,7 +102,7 @@ class ModelRunner:
             dist.barrier()
             if self.rank == 0:
                 self.shm.unlink()
-        if not self.enforce_eager:
+        if self.use_cudagraph:
             del self.graphs, self.graph_pool
         torch.cuda.synchronize()
         dist.destroy_process_group()
@@ -114,7 +142,10 @@ class ModelRunner:
         torch.cuda.reset_peak_memory_stats()
         max_num_batched_tokens, max_model_len = self.config.max_num_batched_tokens, self.config.max_model_len
         num_seqs = max(min(max_num_batched_tokens // max_model_len, self.config.max_num_seqs), 1)
-        seqs = [Sequence([0] * max_model_len) for _ in range(num_seqs)]
+        seqs = [
+            Sequence([0] * max_model_len, block_size=self.block_size)
+            for _ in range(num_seqs)
+        ]
         for seq in seqs:
             seq.num_new_tokens = max_model_len
         self.run(seqs)
@@ -157,6 +188,9 @@ class ModelRunner:
         slot_mapping = []
         block_tables = None
         context_lens = []
+        page_kv_indptr = [0]
+        page_indices = []
+        page_last_page_len = []
         seq_need_compute_logits = []
         for seq_index, seq in enumerate(seqs):
             if len(seq) == seq.num_cached_tokens + seq.num_new_tokens and seq.block_table:
@@ -170,6 +204,13 @@ class ModelRunner:
             cu_seqlens_k.append(cu_seqlens_k[-1] + seqlen_k)
             max_seqlen_q = max(seqlen_q, max_seqlen_q)
             max_seqlen_k = max(seqlen_k, max_seqlen_k)
+            page_indices.extend(seq.block_table)
+            page_kv_indptr.append(page_kv_indptr[-1] + len(seq.block_table))
+            if seq.block_table:
+                last_page_len = seq.num_context_tokens % self.block_size
+                page_last_page_len.append(last_page_len or self.block_size)
+            else:
+                page_last_page_len.append(0)
             if not seq.block_table:    # warmup
                 continue
             for i in range(seq.num_cached_blocks, len(seq.block_table)):
@@ -192,8 +233,30 @@ class ModelRunner:
         cu_seqlens_k = torch.tensor(cu_seqlens_k, dtype=torch.int32, pin_memory=True).cuda(non_blocking=True)
         slot_mapping = torch.tensor(slot_mapping, dtype=torch.int32, pin_memory=True).cuda(non_blocking=True)
         context_lens = torch.tensor(context_lens, dtype=torch.int32, pin_memory=True).cuda(non_blocking=True)
-        seq_need_compute_logits = torch.tensor(seq_need_compute_logits, dtype=torch.int32, pin_memory=True).cuda(non_blocking=True)
-        set_context(cu_seqlens_q, cu_seqlens_k, max_seqlen_q, max_seqlen_k, slot_mapping, context_lens, block_tables, seq_need_compute_logits)
+        if any(seq.block_table for seq in seqs):
+            seq_need_compute_logits = torch.tensor(
+                seq_need_compute_logits, dtype=torch.int32, pin_memory=True
+            ).cuda(non_blocking=True)
+        else:
+            seq_need_compute_logits = None
+        page_kv_indptr = torch.tensor(page_kv_indptr, dtype=torch.int32, pin_memory=True).cuda(non_blocking=True)
+        page_indices = torch.tensor(page_indices, dtype=torch.int32, pin_memory=True).cuda(non_blocking=True)
+        page_last_page_len = torch.tensor(page_last_page_len, dtype=torch.int32, pin_memory=True).cuda(non_blocking=True)
+        set_context(
+            cu_seqlens_q=cu_seqlens_q,
+            cu_seqlens_k=cu_seqlens_k,
+            max_seqlen_q=max_seqlen_q,
+            max_seqlen_k=max_seqlen_k,
+            slot_mapping=slot_mapping,
+            context_lens=context_lens,
+            block_tables=block_tables,
+            seq_need_compute_logits=seq_need_compute_logits,
+            page_q_indptr=cu_seqlens_q,
+            page_kv_indptr=page_kv_indptr,
+            page_indices=page_indices,
+            page_last_page_len=page_last_page_len,
+        )
+        self.attention_backend.plan(get_context())
         return input_ids, positions
 
     def prepare_sample(self, seqs: list[Sequence]):
@@ -202,17 +265,23 @@ class ModelRunner:
         for seq in seqs:
             temperatures.append(seq.temperature)
         temperatures = torch.tensor(temperatures, dtype=torch.float32, pin_memory=True).cuda(non_blocking=True)
-        if context.seq_need_compute_logits.numel():
+        if context.seq_need_compute_logits is not None:
             temperatures = temperatures[context.seq_need_compute_logits]
         return temperatures
 
     @torch.inference_mode()
     def run_model(self, input_ids: torch.Tensor, positions: torch.Tensor):
-        if self.enforce_eager or input_ids.size(0) > 512:
+        context = get_context()
+        use_graph = (
+            self.use_cudagraph
+            and input_ids.size(0) <= 512
+            and context.max_seqlen_q == 1
+            and context.block_tables is not None
+        )
+        if not use_graph:
             return self.model.compute_logits(self.model(input_ids, positions))
         else:
             bs = input_ids.size(0)
-            context = get_context()
             graph = self.graphs[next(x for x in self.graph_bs if x >= bs)]
             graph_vars = self.graph_vars
             graph_vars["input_ids"][:bs] = input_ids

@@ -41,10 +41,17 @@ class BlockManager:
     
     def __init__(self, num_blocks: int, block_size: int):
         self.block_size = block_size
+        assert block_size > 0
         self.blocks: list[Block] = [Block(i) for i in range(num_blocks)]
         self.hash_to_block_id: dict[int, int] = dict()
         self.free_block_ids: deque[int] = deque(range(num_blocks))
         self.used_block_ids: set[int] = set()
+
+    def _assert_block_size(self, seq: Sequence) -> None:
+        assert seq.block_size == self.block_size, (
+            f"sequence block size {seq.block_size} does not match "
+            f"manager block size {self.block_size}"
+        )
 
     @classmethod
     def compute_hash(cls, token_ids: list[int], prefix: int = -1):
@@ -79,6 +86,7 @@ class BlockManager:
         """
         Only for seq in the waiting queue.
         """
+        self._assert_block_size(seq)
         assert not seq.block_table
         num_new_tokens = 0
         num_new_computed_tokens_in_used = 0
@@ -104,13 +112,18 @@ class BlockManager:
         """
         Only for seq in the waiting queue.
         """
+        self._assert_block_size(seq)
         assert not seq.block_table
         h = -1
         # allocate new_computed_blocks
         for i in range(seq.num_blocks):
             token_ids = seq.block(i)
-            h = self.compute_hash(token_ids, h) if len(token_ids) == self.block_size else -1
-            block_id = self.hash_to_block_id.get(h, -1)
+            candidate_hash = (
+                self.compute_hash(token_ids, h)
+                if len(token_ids) == self.block_size
+                else -1
+            )
+            block_id = self.hash_to_block_id.get(candidate_hash, -1)
             if block_id == -1 or self.blocks[block_id].token_ids != token_ids or i == seq.num_blocks - 1:
                 break               # cache miss
             seq.num_cached_tokens += self.block_size
@@ -119,27 +132,36 @@ class BlockManager:
                 block.ref_count += 1
             else:
                 block = self._allocate_block(block_id)
-            block.update(h, token_ids)
-            self.hash_to_block_id[h] = block_id
+            block.update(candidate_hash, token_ids)
+            self.hash_to_block_id[candidate_hash] = block_id
             seq.block_table.append(block_id)
+            h = candidate_hash
         
-        # allocate new_blocks
-        for i in range(seq.num_cached_tokens, seq.num_cached_tokens + seq.num_new_tokens, self.block_size):
-            token_ids = seq[i: min(i + self.block_size, seq.num_cached_tokens + seq.num_new_tokens)]
-            if i != seq.num_cached_tokens:
-                h = self.compute_hash(token_ids, h) if len(token_ids) == self.block_size else -1
+        # Hash only tokens committed to this scheduling step. A partial block
+        # must remain unpublished until may_append observes it as complete.
+        context_end = seq.num_cached_tokens + seq.num_new_tokens
+        h = self.blocks[seq.block_table[-1]].hash if seq.block_table else -1
+        for i in range(seq.num_cached_tokens, context_end, self.block_size):
+            token_ids = seq[i: min(i + self.block_size, context_end)]
+            block_hash = (
+                self.compute_hash(token_ids, h)
+                if len(token_ids) == self.block_size
+                else -1
+            )
             block_id = self.free_block_ids[0]
             block = self._allocate_block(block_id)
-            if h != -1:
-                block.update(h, token_ids)
-                self.hash_to_block_id[h] = block_id
+            if block_hash != -1:
+                block.update(block_hash, token_ids)
+                self.hash_to_block_id[block_hash] = block_id
             seq.block_table.append(block_id)
+            h = block_hash
 
 
     def deallocate(self, seq: Sequence):
         """
         For finished seq or preempted seq in the running queue.
         """
+        self._assert_block_size(seq)
         for block_id in reversed(seq.block_table):
             block = self.blocks[block_id]
             block.ref_count -= 1
@@ -153,6 +175,7 @@ class BlockManager:
         """
         Only for seq in the running queue.
         """
+        self._assert_block_size(seq)
         last_computed_block_capacity = self.block_size - (seq.num_cached_tokens % self.block_size)
         if last_computed_block_capacity == self.block_size:
             last_computed_block_capacity = 0
@@ -165,6 +188,7 @@ class BlockManager:
         """
         Only for seq in the running queue.
         """
+        self._assert_block_size(seq)
         for i in range(
             seq.num_cached_blocks * self.block_size, 
             seq.num_cached_tokens + seq.num_new_tokens, 

@@ -12,11 +12,17 @@ class SequenceStatus(Enum):
 
 
 class Sequence:
-    block_size = 256
     counter = count()
 
-    def __init__(self, token_ids: list[int], sampling_params = SamplingParams()):
+    def __init__(
+        self,
+        token_ids: list[int],
+        sampling_params=SamplingParams(),
+        block_size: int = 16,
+    ):
+        assert block_size > 0
         self.seq_id = next(Sequence.counter)
+        self.block_size = block_size
         self.status = SequenceStatus.WAITING
         self.token_ids = copy(token_ids)
         self.last_token = token_ids[-1]
@@ -83,9 +89,7 @@ class Sequence:
         assert self.num_tokens == len(self.token_ids)
 
     def __getstate__(self):
-        return (self.token_ids, self.last_token, self.num_tokens, self.num_prompt_tokens, \
-                self.num_cached_tokens, self.num_new_tokens, self.block_table, self.temperature)
+        return self.__dict__.copy()
 
     def __setstate__(self, state):
-        self.token_ids, self.last_token, self.num_tokens, self.num_prompt_tokens, self.num_cached_tokens, \
-            self.num_new_tokens, self.block_table, self.temperature = state
+        self.__dict__.update(state)
