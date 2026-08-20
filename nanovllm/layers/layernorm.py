@@ -1,6 +1,18 @@
 import torch
 from torch import nn
 
+from nanovllm.layers.operators import OperatorResolver, register_operator
+
+
+@register_operator("rms_norm", "native_torch", priority=100)
+def _bind_native_rms_norm(layer):
+    return layer.rms_forward
+
+
+@register_operator("fused_add_rms_norm", "native_torch", priority=100)
+def _bind_native_fused_add_rms_norm(layer):
+    return layer.add_rms_forward
+
 
 class RMSNorm(nn.Module):
 
@@ -8,10 +20,18 @@ class RMSNorm(nn.Module):
         self,
         hidden_size: int,
         eps: float = 1e-6,
+        operator_resolver: OperatorResolver | None = None,
     ) -> None:
         super().__init__()
         self.eps = eps
         self.weight = nn.Parameter(torch.ones(hidden_size))
+        resolver = operator_resolver or OperatorResolver()
+        self.rms_provider_name, self.rms_impl = resolver.bind(
+            "rms_norm", self, hidden_size=hidden_size
+        )
+        self.add_rms_provider_name, self.add_rms_impl = resolver.bind(
+            "fused_add_rms_norm", self, hidden_size=hidden_size
+        )
 
     @torch.compile
     def rms_forward(
@@ -45,6 +65,6 @@ class RMSNorm(nn.Module):
         residual: torch.Tensor | None = None,
     ) -> torch.Tensor | tuple[torch.Tensor, torch.Tensor]:
         if residual is None:
-            return self.rms_forward(x)
+            return self.rms_impl(x)
         else:
-            return self.add_rms_forward(x, residual)
+            return self.add_rms_impl(x, residual)

@@ -1,5 +1,5 @@
 import os
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from transformers import AutoConfig
 
 
@@ -17,6 +17,7 @@ class Config:
     kvcache_block_size: int = 256
     num_kvcache_blocks: int = -1
     chunked_prefill: bool = False
+    operator_overrides: dict[str, str] = field(default_factory=dict)
 
     def __post_init__(self):
         assert os.path.isdir(self.model)

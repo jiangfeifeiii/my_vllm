@@ -38,7 +38,7 @@ class NativeOperatorTest(TestCase):
     dtypes = (torch.float16, torch.bfloat16)
 
     def test_silu_and_mul_value_shape_dtype_and_input_aliasing(self):
-        with _eager_native_methods((SiluAndMul, "forward")):
+        with _eager_native_methods((SiluAndMul, "native_forward")):
             for dtype in self.dtypes:
                 with self.subTest(dtype=dtype):
                     torch.manual_seed(7)
@@ -123,7 +123,7 @@ class NativeOperatorTest(TestCase):
                     )
 
     def test_rope_value_tuple_shape_dtype_and_out_of_place_contract(self):
-        with _eager_native_methods((RotaryEmbedding, "forward")):
+        with _eager_native_methods((RotaryEmbedding, "native_forward")):
             for dtype in self.dtypes:
                 with self.subTest(dtype=dtype):
                     torch.manual_seed(17)

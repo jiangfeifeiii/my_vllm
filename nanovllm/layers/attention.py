@@ -4,6 +4,7 @@ import triton
 import triton.language as tl
 
 from flash_attn import flash_attn_varlen_func, flash_attn_with_kvcache
+from nanovllm.layers.operators import OperatorResolver, register_operator
 from nanovllm.utils.context import get_context
 
 
@@ -39,6 +40,11 @@ def store_kvcache(key: torch.Tensor, value: torch.Tensor, k_cache: torch.Tensor,
     assert slot_mapping.numel() == N
     store_kvcache_kernel[(N,)](key, key.stride(0), value, value.stride(0), k_cache, v_cache, slot_mapping, D)
 
+@register_operator("kv_cache_store", "native_triton", priority=300)
+def _bind_native_kv_cache_store(_):
+    return store_kvcache
+
+
 
 class Attention(nn.Module):
 
@@ -48,6 +54,7 @@ class Attention(nn.Module):
         head_dim,
         scale,
         num_kv_heads,
+        operator_resolver: OperatorResolver | None = None,
     ):
         super().__init__()
         self.num_heads = num_heads
@@ -55,12 +62,16 @@ class Attention(nn.Module):
         self.scale = scale
         self.num_kv_heads = num_kv_heads
         self.k_cache = self.v_cache = torch.tensor([])
+        resolver = operator_resolver or OperatorResolver()
+        self.kv_store_provider_name, self.kv_store_impl = resolver.bind(
+            "kv_cache_store", self, layout="NHD", head_dim=head_dim
+        )
 
     def forward(self, q: torch.Tensor, k: torch.Tensor, v: torch.Tensor):
         context = get_context()
         k_cache, v_cache = self.k_cache, self.v_cache
         if k_cache.numel() and v_cache.numel():
-            store_kvcache(k, v, k_cache, v_cache, context.slot_mapping)
+            self.kv_store_impl(k, v, k_cache, v_cache, context.slot_mapping)
 
         if context.block_tables is not None:    # prefix cache
             k, v = k_cache, v_cache
