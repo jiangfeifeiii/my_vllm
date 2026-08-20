@@ -1,5 +1,5 @@
 [build-system]
-requires = ["setuptools>=61"]
+requires = ["setuptools>=61,<82", "torch>=2.4.0"]
 build-backend = "setuptools.build_meta"
 
 [project]
@@ -16,6 +16,7 @@ dependencies = [
     "triton>=3.0.0",
     "transformers>=4.51.0",
     "flash-attn",
+    "flashinfer-python==0.6.17",
     "xxhash",
 ]
 

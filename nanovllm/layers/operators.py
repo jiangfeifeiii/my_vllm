@@ -1,5 +1,6 @@
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
+from importlib import import_module
 from typing import Any
 
 
@@ -70,6 +71,20 @@ class OperatorRegistry:
 
 
 REGISTRY = OperatorRegistry()
+
+
+def load_optional_providers() -> dict[str, str]:
+    """Load installed GPU providers without making them native-path dependencies."""
+    errors = {}
+    for module_name in (
+        "nanovllm.layers.flashinfer_ops",
+        "nanovllm.layers.cuda_ops",
+    ):
+        try:
+            import_module(module_name)
+        except (ImportError, OSError, RuntimeError) as error:
+            errors[module_name] = str(error)
+    return errors
 
 
 def register_operator(

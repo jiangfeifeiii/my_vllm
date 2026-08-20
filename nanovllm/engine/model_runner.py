@@ -8,7 +8,7 @@ from nanovllm.config import Config
 from nanovllm.engine.sequence import Sequence
 from nanovllm.models.qwen3 import Qwen3ForCausalLM
 from nanovllm.layers.sampler import Sampler
-from nanovllm.layers.operators import OperatorResolver
+from nanovllm.layers.operators import OperatorResolver, load_optional_providers
 from nanovllm.utils.context import set_context, get_context, reset_context
 from nanovllm.utils.loader import load_model
 
@@ -32,6 +32,7 @@ class ModelRunner:
         default_dtype = torch.get_default_dtype()
         torch.set_default_dtype(self.dtype)
         torch.set_default_device("cuda")
+        self.optional_provider_errors = load_optional_providers()
         self.operator_resolver = OperatorResolver(
             config.operator_overrides,
             dtype=self.dtype,
