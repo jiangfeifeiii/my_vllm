@@ -143,7 +143,7 @@ class LegacyFlashAttentionBackend(AttentionBackend):
 
 
 class FlashInferAttentionBackend(AttentionBackend):
-    """Phase-specialized paged backend using one plan for all layers."""
+    """Configurable unified/split paged backend shared by all layers."""
 
     _PAGE_FIELDS = (
         "page_q_indptr",
@@ -159,11 +159,16 @@ class FlashInferAttentionBackend(AttentionBackend):
         head_dim: int,
         block_size: int,
         dtype: torch.dtype,
+        attention_mode: str = "unified",
     ) -> None:
         super().__init__(
             num_q_heads, num_kv_heads, head_dim, block_size, dtype
         )
         _load_flashinfer_attention()
+        if attention_mode not in ("unified", "split"):
+            raise ValueError("attention_mode must be 'unified' or 'split'")
+        self.attention_mode = attention_mode
+
         if dtype not in (torch.float16, torch.bfloat16):
             raise TypeError(
                 "FlashInfer attention supports only float16 and bfloat16"
@@ -200,6 +205,8 @@ class FlashInferAttentionBackend(AttentionBackend):
         self._num_prefill_tokens = 0
         self._num_decode_seqs = 0
         self._num_decode_tokens = 0
+
+        self._output_buffer: torch.Tensor | None = None
 
     def plan(self, context: Any) -> None:
         self._planned = False
@@ -304,13 +311,12 @@ class FlashInferAttentionBackend(AttentionBackend):
                     "every sequence in the decode suffix must have q_len == 1"
                 )
 
-        prefill_page_end = int(kv_indptr[num_prefill_seqs].item())
-        if num_prefill_seqs:
+        if self.attention_mode == "unified":
             self.prefill_wrapper.plan(
-                q_indptr[: num_prefill_seqs + 1],
-                kv_indptr[: num_prefill_seqs + 1],
-                indices[:prefill_page_end],
-                last_page_len[:num_prefill_seqs],
+                q_indptr,
+                kv_indptr,
+                indices,
+                last_page_len,
                 self.num_q_heads,
                 self.num_kv_heads,
                 self.head_dim,
@@ -320,28 +326,61 @@ class FlashInferAttentionBackend(AttentionBackend):
                 kv_data_type=self.dtype,
                 o_data_type=self.dtype,
             )
-        if num_decode_seqs:
-            decode_kv_indptr = (
-                kv_indptr[num_prefill_seqs:] - prefill_page_end
-            )
-            self.decode_wrapper.plan(
-                decode_kv_indptr,
-                indices[prefill_page_end:],
-                last_page_len[num_prefill_seqs:],
-                self.num_q_heads,
-                self.num_kv_heads,
-                self.head_dim,
-                self.block_size,
-                pos_encoding_mode="NONE",
-                q_data_type=self.dtype,
-                kv_data_type=self.dtype,
-                o_data_type=self.dtype,
-            )
+        else:
+            prefill_page_end = int(kv_indptr[num_prefill_seqs].item())
+            if num_prefill_seqs:
+                self.prefill_wrapper.plan(
+                    q_indptr[: num_prefill_seqs + 1],
+                    kv_indptr[: num_prefill_seqs + 1],
+                    indices[:prefill_page_end],
+                    last_page_len[:num_prefill_seqs],
+                    self.num_q_heads,
+                    self.num_kv_heads,
+                    self.head_dim,
+                    self.block_size,
+                    causal=True,
+                    q_data_type=self.dtype,
+                    kv_data_type=self.dtype,
+                    o_data_type=self.dtype,
+                )
+            if num_decode_seqs:
+                decode_kv_indptr = (
+                    kv_indptr[num_prefill_seqs:] - prefill_page_end
+                )
+                self.decode_wrapper.plan(
+                    decode_kv_indptr,
+                    indices[prefill_page_end:],
+                    last_page_len[num_prefill_seqs:],
+                    self.num_q_heads,
+                    self.num_kv_heads,
+                    self.head_dim,
+                    self.block_size,
+                    pos_encoding_mode="NONE",
+                    q_data_type=self.dtype,
+                    kv_data_type=self.dtype,
+                    o_data_type=self.dtype,
+                )
         self._num_prefill_seqs = num_prefill_seqs
         self._num_prefill_tokens = num_prefill_tokens
         self._num_decode_seqs = num_decode_seqs
         self._num_decode_tokens = num_decode_tokens
         self._planned = True
+
+    def _get_reusable_attention_output(
+        self,
+        q: torch.Tensor,
+    ) -> torch.Tensor:
+        required_tokens = q.size(0)
+        buffer = self._output_buffer
+        if (
+            buffer is None
+            or buffer.size(0) < required_tokens
+            or buffer.device != q.device
+            or buffer.dtype != q.dtype
+        ):
+            buffer = torch.empty_like(q)
+            self._output_buffer = buffer
+        return buffer[:required_tokens]
 
     def forward(
         self,
@@ -360,7 +399,12 @@ class FlashInferAttentionBackend(AttentionBackend):
         if not has_k_cache:
             # This path exists only for the model-runner memory warmup before
             # cache allocation. Serving batches always use the paged wrapper.
-            return _flash_attention_varlen(q, k, v, context, None)
+            output = _flash_attention_varlen(q, k, v, context, None)
+            if self.attention_mode == "split":
+                scratch = self._get_reusable_attention_output(q)
+                scratch.copy_(output)
+                return scratch
+            return output
 
         if not self._planned:
             raise RuntimeError(
@@ -375,17 +419,27 @@ class FlashInferAttentionBackend(AttentionBackend):
             )
 
         cache = (k_cache, v_cache)
-        if self._num_prefill_seqs and self._num_decode_seqs:
-            prefill_output = self.prefill_wrapper.run(
-                q[: self._num_prefill_tokens], cache
-            )
-            decode_output = self.decode_wrapper.run(
-                q[self._num_prefill_tokens :], cache
-            )
-            return torch.cat((prefill_output, decode_output), dim=0)
-        if self._num_prefill_seqs:
+        if self.attention_mode == "unified":
             return self.prefill_wrapper.run(q, cache)
-        return self.decode_wrapper.run(q, cache)
+
+        output = self._get_reusable_attention_output(q)
+        if self._num_prefill_seqs:
+            self.prefill_wrapper.run(
+                q[: self._num_prefill_tokens],
+                cache,
+                out=output[: self._num_prefill_tokens],
+            )
+        if self._num_decode_seqs:
+            decode_output = output[self._num_prefill_tokens :]
+            # FlashInfer's cute-dsl decode backend requires caller-provided
+            # output to be zero-initialized; doing so is safe for AOT backends.
+            decode_output.zero_()
+            self.decode_wrapper.run(
+                q[self._num_prefill_tokens :],
+                cache,
+                out=decode_output,
+            )
+        return output
 
 
 def _has_cache(cache: torch.Tensor | None) -> bool:

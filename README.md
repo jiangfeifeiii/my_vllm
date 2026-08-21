@@ -73,6 +73,7 @@ llm = LLM(
     enforce_eager=True,
     tensor_parallel_size=1,
     attention_backend="flashinfer",
+    attention_mode="unified",
     kvcache_block_size=16,
     chunked_prefill=True,
 )
@@ -80,6 +81,11 @@ params = SamplingParams(temperature=0.6, max_tokens=256)
 outputs = llm.generate(["Hello, Nano-vLLM."], params)
 print(outputs[0]["text"])
 ```
+
+`attention_mode="unified"` is the default and sends the complete packed
+`[Prefill | Decode]` query through one paged prefill call. Select `"split"`
+to use phase-specialized prefill/decode wrappers writing directly into one
+reusable output buffer; the split path does not concatenate temporary outputs.
 
 For a runnable example that explicitly enables FlashInfer attention, 16-token
 KV pages, chunked prefill, cache-aware LPM, the custom CUDA SiLU kernel, and

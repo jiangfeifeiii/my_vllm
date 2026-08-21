@@ -42,23 +42,27 @@ class ModelRunner:
             dtype=self.dtype,
             device_type="cuda",
         )
-        backend_cls = (
-            FlashInferAttentionBackend
-            if config.attention_backend == "flashinfer"
-            else LegacyFlashAttentionBackend
-        )
         head_dim = getattr(
             hf_config,
             "head_dim",
             hf_config.hidden_size // hf_config.num_attention_heads,
         )
-        self.attention_backend = backend_cls(
-            num_q_heads=hf_config.num_attention_heads // self.world_size,
-            num_kv_heads=hf_config.num_key_value_heads // self.world_size,
-            head_dim=head_dim,
-            block_size=self.block_size,
-            dtype=self.dtype,
-        )
+        backend_kwargs = {
+            "num_q_heads": hf_config.num_attention_heads // self.world_size,
+            "num_kv_heads": hf_config.num_key_value_heads // self.world_size,
+            "head_dim": head_dim,
+            "block_size": self.block_size,
+            "dtype": self.dtype,
+        }
+        if config.attention_backend == "flashinfer":
+            self.attention_backend = FlashInferAttentionBackend(
+                **backend_kwargs,
+                attention_mode=config.attention_mode,
+            )
+        else:
+            self.attention_backend = LegacyFlashAttentionBackend(
+                **backend_kwargs,
+            )
         self.use_cudagraph = (
             not self.enforce_eager and self.attention_backend.supports_cudagraph
         )
@@ -140,14 +144,22 @@ class ModelRunner:
     def warmup_model(self):
         torch.cuda.empty_cache()
         torch.cuda.reset_peak_memory_stats()
-        max_num_batched_tokens, max_model_len = self.config.max_num_batched_tokens, self.config.max_model_len
-        num_seqs = max(min(max_num_batched_tokens // max_model_len, self.config.max_num_seqs), 1)
+        max_num_batched_tokens = self.config.max_num_batched_tokens
+        max_model_len = self.config.max_model_len
+        warmup_tokens = min(
+            max_num_batched_tokens,
+            self.config.max_num_seqs * max_model_len,
+        )
+        num_full_seqs, remainder = divmod(warmup_tokens, max_model_len)
+        sequence_lengths = [max_model_len] * num_full_seqs
+        if remainder:
+            sequence_lengths.append(remainder)
         seqs = [
-            Sequence([0] * max_model_len, block_size=self.block_size)
-            for _ in range(num_seqs)
+            Sequence([0] * length, block_size=self.block_size)
+            for length in sequence_lengths
         ]
         for seq in seqs:
-            seq.num_new_tokens = max_model_len
+            seq.num_new_tokens = len(seq)
         self.run(seqs)
         torch.cuda.empty_cache()
 

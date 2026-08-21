@@ -52,7 +52,12 @@ def _model_path() -> Path:
 
 
 @contextmanager
-def _owned_llm(*, batch_tokens: int, chunked_prefill: bool):
+def _owned_llm(
+    *,
+    batch_tokens: int,
+    chunked_prefill: bool,
+    attention_mode: str,
+):
     from nanovllm import LLM
 
     original_dtype = torch.get_default_dtype()
@@ -67,6 +72,7 @@ def _owned_llm(*, batch_tokens: int, chunked_prefill: bool):
             max_num_batched_tokens=batch_tokens,
             max_num_seqs=4,
             gpu_memory_utilization=GPU_MEMORY_UTILIZATION,
+            attention_mode=attention_mode,
             attention_backend="flashinfer",
             kvcache_block_size=16,
             chunked_prefill=chunked_prefill,
@@ -107,16 +113,18 @@ def _assert_generation(outputs, expected_lengths):
 
 
 @pytest.mark.skipif(
-    BATCH_TOKENS < 34,
-    reason="NANOVLLM_E2E_BATCH_TOKENS must be at least 34 for full prefills",
+    BATCH_TOKENS < 66,
+    reason="NANOVLLM_E2E_BATCH_TOKENS must be at least 66 for full prefills",
 )
-def test_flashinfer_prefill_decode_prefix_reuse_and_mixed_batch():
+@pytest.mark.parametrize("attention_mode", ["unified", "split"])
+def test_flashinfer_prefill_decode_prefix_reuse_and_mixed_batch(attention_mode):
     torch.manual_seed(211)
     torch.cuda.manual_seed_all(211)
 
     with _owned_llm(
         batch_tokens=BATCH_TOKENS,
         chunked_prefill=False,
+        attention_mode=attention_mode,
     ) as llm:
         # A 15-token prefill followed by three decode steps crosses a page.
         boundary_prompt = list(range(100, 115))
@@ -239,6 +247,7 @@ def test_flashinfer_prefill_decode_prefix_reuse_and_mixed_batch():
             (prefill_id, len(prefill_prompt)), (decode_id, 1)
         ]
         backend = llm.model_runner.attention_backend
+        assert backend.attention_mode == attention_mode
         assert backend._num_prefill_seqs == 1
         assert backend._num_prefill_tokens == len(prefill_prompt)
         assert backend._num_decode_seqs == 1
@@ -256,11 +265,16 @@ def test_flashinfer_prefill_decode_prefix_reuse_and_mixed_batch():
         assert len(finished[prefill_id]) == 2
 
 
-def test_flashinfer_chunked_prefill_completes_partial_page():
+@pytest.mark.parametrize("attention_mode", ["unified", "split"])
+def test_flashinfer_chunked_prefill_completes_partial_page(attention_mode):
     torch.manual_seed(223)
     torch.cuda.manual_seed_all(223)
 
-    with _owned_llm(batch_tokens=8, chunked_prefill=True) as llm:
+    with _owned_llm(
+        batch_tokens=8,
+        chunked_prefill=True,
+        attention_mode=attention_mode,
+    ) as llm:
         # 21 is deliberately unaligned: chunks are 8, 8, and 5 tokens.
         prompt = list(range(5000, 5021))
         outputs = llm.generate(

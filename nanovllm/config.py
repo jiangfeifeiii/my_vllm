@@ -20,14 +20,19 @@ class Config:
     enable_lpm: bool = True
     enable_in_batch_prefix_deprioritization: bool = True
     attention_backend: str = "flashinfer"
+    attention_mode: str = "unified"
     operator_overrides: dict[str, str] = field(default_factory=dict)
 
     def __post_init__(self):
         assert os.path.isdir(self.model)
         assert self.kvcache_block_size > 0
         assert self.attention_backend in ("flashinfer", "legacy")
+        assert self.attention_mode in ("unified", "split")
         if self.attention_backend == "legacy":
             assert self.kvcache_block_size % 256 == 0
+            assert self.attention_mode == "unified", (
+                "legacy attention supports only attention_mode='unified'"
+            )
         assert 1 <= self.tensor_parallel_size <= 8
         self.hf_config = AutoConfig.from_pretrained(self.model)
         self.max_model_len = min(self.max_model_len, self.hf_config.max_position_embeddings)

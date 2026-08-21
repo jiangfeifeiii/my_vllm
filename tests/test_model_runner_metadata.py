@@ -1,4 +1,6 @@
+from types import SimpleNamespace
 from unittest import TestCase, main, skipUnless
+from unittest.mock import Mock, patch
 
 import torch
 
@@ -14,6 +16,42 @@ def _tolist(tensor: torch.Tensor) -> list[int]:
 class _BackendRecorder:
     def plan(self, context):
         self.context = context
+
+
+class ModelRunnerWarmupTest(TestCase):
+
+    def test_warmup_covers_maximum_packed_token_capacity(self):
+        cases = (
+            (16384, 4352, 4, [4352, 4352, 4352, 3328]),
+            (16384, 4352, 2, [4352, 4352]),
+            (8, 96, 4, [8]),
+        )
+        for batch_tokens, model_len, max_seqs, expected in cases:
+            with self.subTest(
+                batch_tokens=batch_tokens,
+                model_len=model_len,
+                max_seqs=max_seqs,
+            ):
+                runner = object.__new__(ModelRunner)
+                runner.config = SimpleNamespace(
+                    max_num_batched_tokens=batch_tokens,
+                    max_model_len=model_len,
+                    max_num_seqs=max_seqs,
+                )
+                runner.block_size = 16
+                runner.run = Mock()
+                with (
+                    patch("torch.cuda.empty_cache"),
+                    patch("torch.cuda.reset_peak_memory_stats"),
+                ):
+                    runner.warmup_model()
+
+                sequences = runner.run.call_args.args[0]
+                self.assertEqual([len(seq) for seq in sequences], expected)
+                self.assertEqual(
+                    [seq.num_new_tokens for seq in sequences],
+                    expected,
+                )
 
 
 @skipUnless(torch.cuda.is_available(), "ModelRunner metadata preparation uses CUDA")

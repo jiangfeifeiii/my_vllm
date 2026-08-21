@@ -56,6 +56,11 @@ class AttentionBackendValidationTest(TestCase):
             ):
                 FlashInferAttentionBackend(16, 4, 128, 16, torch.bfloat16)
 
+    def test_flashinfer_rejects_unknown_attention_mode(self):
+        with self.assertRaisesRegex(ValueError, "attention_mode"):
+            FlashInferAttentionBackend(
+                16, 4, 128, 16, torch.bfloat16, attention_mode="auto"
+            )
 
 _SKIP_REASON = "FlashInfer attention tests require CUDA and FlashInfer AOT kernels"
 
@@ -72,7 +77,9 @@ class FlashInferAttentionBackendTest(TestCase):
     dtype = torch.bfloat16
 
     def _backend(
-        self, dtype: torch.dtype | None = None
+        self,
+        dtype: torch.dtype | None = None,
+        attention_mode: str = "unified",
     ) -> FlashInferAttentionBackend:
         return FlashInferAttentionBackend(
             self.num_q_heads,
@@ -80,6 +87,7 @@ class FlashInferAttentionBackendTest(TestCase):
             self.head_dim,
             self.block_size,
             dtype or self.dtype,
+            attention_mode=attention_mode,
         )
 
     def test_unified_bf16_gqa_page_size_16_matches_reference(self):
@@ -154,7 +162,7 @@ class FlashInferAttentionBackendTest(TestCase):
         self.assertEqual(output.dtype, self.dtype)
         torch.testing.assert_close(output, expected, atol=2e-2, rtol=2e-2)
 
-    def test_phase_specialized_pure_prefill_decode_and_mixed(self):
+    def test_unified_pure_prefill_decode_and_mixed(self):
         cases = (
             ("pure_prefill", (5, 3), (21, 13), 2),
             ("pure_decode", (1, 1), (21, 13), 0),
@@ -259,6 +267,206 @@ class FlashInferAttentionBackendTest(TestCase):
                             rtol=tolerance,
                         )
 
+    def test_zero_copy_split_pure_prefill_decode_and_mixed(self):
+        cases = (
+            ("pure_decode", (1, 1), (21, 13), 0),
+            ("pure_prefill", (5, 3), (21, 13), 2),
+            ("mixed", (5, 1, 1), (21, 13, 18), 1),
+        )
+        for dtype in (torch.float16, torch.bfloat16):
+            backend = self._backend(dtype, "split")
+            self.assertEqual(
+                backend.prefill_wrapper._float_workspace_buffer.data_ptr(),
+                backend.workspace.data_ptr(),
+            )
+            self.assertEqual(
+                backend.decode_wrapper._float_workspace_buffer.data_ptr(),
+                backend.workspace.data_ptr(),
+            )
+            previous_ptr = None
+            capacity = 0
+            for case_index, (
+                phase,
+                query_lengths,
+                kv_lengths,
+                num_prefill_seqs,
+            ) in enumerate(cases):
+                with self.subTest(dtype=dtype, phase=phase):
+                    torch.manual_seed(401 + case_index)
+                    context, q, k_cache, v_cache = _phase_case(
+                        dtype,
+                        query_lengths,
+                        kv_lengths,
+                        num_prefill_seqs,
+                    )
+                    unused_k = q.new_empty(
+                        (0, self.num_kv_heads, self.head_dim)
+                    )
+                    unused_v = torch.empty_like(unused_k)
+
+                    backend.plan(context)
+                    output = backend.forward(
+                        q,
+                        unused_k,
+                        unused_v,
+                        k_cache,
+                        v_cache,
+                        context,
+                    )
+                    expected = _paged_attention_reference(
+                        q,
+                        k_cache,
+                        v_cache,
+                        context.page_kv_indptr,
+                        context.page_indices,
+                        query_lengths,
+                        kv_lengths,
+                    )
+                    tolerance = 5e-3 if dtype == torch.float16 else 2e-2
+
+                    self.assertIsNotNone(backend._output_buffer)
+                    self.assertEqual(
+                        output.data_ptr(),
+                        backend._output_buffer.data_ptr(),
+                    )
+                    if previous_ptr is not None:
+                        if q.size(0) <= capacity:
+                            self.assertEqual(output.data_ptr(), previous_ptr)
+                        else:
+                            self.assertNotEqual(output.data_ptr(), previous_ptr)
+                    previous_ptr = output.data_ptr()
+                    capacity = max(capacity, q.size(0))
+                    torch.testing.assert_close(
+                        output,
+                        expected,
+                        atol=tolerance,
+                        rtol=tolerance,
+                    )
+
+                    if phase == "mixed":
+                        second_q = torch.randn_like(q)
+                        second_output = backend.forward(
+                            second_q,
+                            unused_k,
+                            unused_v,
+                            k_cache,
+                            v_cache,
+                            context,
+                        )
+                        second_expected = _paged_attention_reference(
+                            second_q,
+                            k_cache,
+                            v_cache,
+                            context.page_kv_indptr,
+                            context.page_indices,
+                            query_lengths,
+                            kv_lengths,
+                        )
+                        self.assertEqual(second_output.data_ptr(), previous_ptr)
+                        torch.testing.assert_close(
+                            second_output,
+                            second_expected,
+                            atol=tolerance,
+                            rtol=tolerance,
+                        )
+
+    def test_plan_uses_full_metadata_for_unified_and_slices_for_split(self):
+        context, _, _, _ = _phase_case(
+            torch.bfloat16,
+            (5, 1),
+            (21, 13),
+            1,
+        )
+        for attention_mode in ("unified", "split"):
+            with self.subTest(attention_mode=attention_mode):
+                backend = self._backend(
+                    torch.bfloat16,
+                    attention_mode,
+                )
+                with (
+                    patch.object(backend.prefill_wrapper, "plan") as prefill,
+                    patch.object(backend.decode_wrapper, "plan") as decode,
+                ):
+                    backend.plan(context)
+
+                if attention_mode == "unified":
+                    prefill.assert_called_once()
+                    decode.assert_not_called()
+                    prefill_args = prefill.call_args.args
+                    self.assertTrue(
+                        torch.equal(prefill_args[0], context.page_q_indptr)
+                    )
+                    self.assertTrue(
+                        torch.equal(prefill_args[1], context.page_kv_indptr)
+                    )
+                    self.assertTrue(
+                        torch.equal(prefill_args[2], context.page_indices)
+                    )
+                    self.assertTrue(
+                        torch.equal(
+                            prefill_args[3],
+                            context.page_last_page_len,
+                        )
+                    )
+                else:
+                    prefill.assert_called_once()
+                    decode.assert_called_once()
+                    prefill_args = prefill.call_args.args
+                    decode_args = decode.call_args.args
+                    self.assertEqual(prefill_args[0].tolist(), [0, 5])
+                    self.assertEqual(prefill_args[1].tolist(), [0, 2])
+                    self.assertEqual(prefill_args[2].tolist(), [0, 1])
+                    self.assertEqual(prefill_args[3].tolist(), [5])
+                    self.assertEqual(decode_args[0].tolist(), [0, 1])
+                    self.assertEqual(decode_args[1].tolist(), [2])
+                    self.assertEqual(decode_args[2].tolist(), [13])
+
+    def test_split_zero_initializes_only_decode_output_slice(self):
+        context, q, k_cache, v_cache = _phase_case(
+            torch.bfloat16,
+            (3, 1),
+            (19, 17),
+            1,
+        )
+        backend = self._backend(torch.bfloat16, "split")
+        backend.plan(context)
+        backend._get_reusable_attention_output(q).fill_(9)
+        unused_k = q.new_empty((0, self.num_kv_heads, self.head_dim))
+        unused_v = torch.empty_like(unused_k)
+
+        def fake_prefill(_, __, *, out):
+            out.fill_(2)
+            return out
+
+        def fake_decode(_, __, *, out):
+            self.assertEqual(torch.count_nonzero(out).item(), 0)
+            out.fill_(3)
+            return out
+
+        with (
+            patch.object(
+                backend.prefill_wrapper,
+                "run",
+                side_effect=fake_prefill,
+            ),
+            patch.object(
+                backend.decode_wrapper,
+                "run",
+                side_effect=fake_decode,
+            ),
+        ):
+            output = backend.forward(
+                q,
+                unused_k,
+                unused_v,
+                k_cache,
+                v_cache,
+                context,
+            )
+
+        self.assertTrue(bool(torch.all(output[:3] == 2).item()))
+        self.assertTrue(bool(torch.all(output[3:] == 3).item()))
+
     def test_cacheless_warmup_uses_ragged_fallback(self):
         torch.manual_seed(223)
         sequence_lengths = (3, 1)
@@ -275,22 +483,32 @@ class FlashInferAttentionBackendTest(TestCase):
             max_seqlen_q=3,
             max_seqlen_k=3,
         )
-        q = torch.randn(
-            4, 16, 128, device="cuda", dtype=torch.bfloat16
-        )
+        q = torch.randn(4, 16, 128, device="cuda", dtype=torch.bfloat16)
         k = torch.randn(4, 4, 128, device="cuda", dtype=torch.bfloat16)
         v = torch.randn_like(k)
         empty_cache = torch.tensor([], device="cuda")
-
-        backend = self._backend()
-        backend.plan(context)
-        output = backend.forward(
-            q, k, v, empty_cache, empty_cache, context
-        )
         expected = _ragged_attention_reference(q, k, v, sequence_lengths)
 
-        self.assertFalse(backend._planned)
-        torch.testing.assert_close(output, expected, atol=2e-2, rtol=2e-2)
+        for attention_mode in ("unified", "split"):
+            with self.subTest(attention_mode=attention_mode):
+                backend = self._backend(attention_mode=attention_mode)
+                backend.plan(context)
+                output = backend.forward(
+                    q, k, v, empty_cache, empty_cache, context
+                )
+
+                self.assertFalse(backend._planned)
+                if attention_mode == "split":
+                    self.assertIsNotNone(backend._output_buffer)
+                    self.assertEqual(
+                        output.data_ptr(),
+                        backend._output_buffer.data_ptr(),
+                    )
+                else:
+                    self.assertIsNone(backend._output_buffer)
+                torch.testing.assert_close(
+                    output, expected, atol=2e-2, rtol=2e-2
+                )
 
     def test_paged_forward_requires_plan(self):
         backend = self._backend()

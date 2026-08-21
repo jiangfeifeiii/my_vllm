@@ -23,6 +23,7 @@ def test_flashinfer_defaults_to_block_size_16(tmp_path):
     assert config.enable_lpm is True
     assert config.enable_in_batch_prefix_deprioritization is True
     assert config.kvcache_block_size == 16
+    assert config.attention_mode == "unified"
 
 
 @pytest.mark.parametrize(
@@ -45,6 +46,32 @@ def test_attention_backend_accepts_supported_block_sizes(
 
     assert config.attention_backend == attention_backend
     assert config.kvcache_block_size == block_size
+
+
+@pytest.mark.parametrize("attention_mode", ["unified", "split"])
+def test_flashinfer_accepts_attention_modes(tmp_path, attention_mode: str):
+    config = _config(tmp_path, attention_mode=attention_mode)
+
+    assert config.attention_mode == attention_mode
+
+
+@pytest.mark.parametrize("attention_mode", ["auto", "", "decode"])
+def test_rejects_unknown_attention_mode(tmp_path, attention_mode: str):
+    with pytest.raises(AssertionError):
+        _config(tmp_path, attention_mode=attention_mode)
+
+
+def test_legacy_rejects_split_attention_mode(tmp_path):
+    with pytest.raises(
+        AssertionError,
+        match="legacy attention supports only",
+    ):
+        _config(
+            tmp_path,
+            attention_backend="legacy",
+            attention_mode="split",
+            kvcache_block_size=256,
+        )
 
 
 @pytest.mark.parametrize(

@@ -37,6 +37,12 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--gpu-memory-utilization", type=float, default=0.35)
     parser.add_argument("--seed", type=int, default=0)
     parser.add_argument(
+        "--attention-mode",
+        choices=("unified", "split"),
+        default="unified",
+        help="FlashInfer attention execution mode.",
+    )
+    parser.add_argument(
         "--debug",
         action="store_true",
         help="Pause in pdb after engine initialization and before generation.",
@@ -83,6 +89,7 @@ def print_runtime_configuration(llm) -> None:
     bindings = collect_provider_bindings(llm)
     print("\nEnabled runtime configuration")
     print(f"  attention backend : {type(llm.model_runner.attention_backend).__name__}")
+    print(f"  attention mode    : {config.attention_mode}")
     print(f"  KV-cache page size: {config.kvcache_block_size}")
     print(f"  chunked prefill   : {config.chunked_prefill}")
     print(f"  batch token budget: {config.max_num_batched_tokens}")
@@ -190,6 +197,7 @@ def main() -> None:
             enforce_eager=True,
             tensor_parallel_size=1,
             attention_backend="flashinfer",
+            attention_mode=args.attention_mode,
             kvcache_block_size=16,
             chunked_prefill=True,
             operator_overrides=OPERATOR_OVERRIDES,

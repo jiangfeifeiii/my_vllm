@@ -71,7 +71,7 @@ default and is carried consistently by `Config`, `Sequence`, `BlockManager`,
 model-runner metadata, cache allocation, and FlashInfer planning.
 
 One backend instance is shared by all transformer layers. It owns one 64 MiB
-CUDA `uint8` workspace and two phase-specialized wrappers:
+CUDA `uint8` workspace and two available wrappers:
 
 - `BatchPrefillWithPagedKVCacheWrapper` for prefill query lengths of one or
   more tokens;
@@ -86,18 +86,27 @@ The scheduler naturally emits a packed batch in this order:
 ```
 
 The model runner records `num_prefill_seqs`, `num_prefill_tokens`, and
-`num_decode_tokens` while building one set of page CSR metadata. `plan` slices
-that metadata at the
-phase boundary and plans the prefill and decode wrappers. Every layer slices
-the same contiguous Q buffer, runs the applicable wrapper(s) sequentially,
-and concatenates outputs back to `[P | D]`. Pure prefill, pure decode, and
-mixed batches use the same backend object. GQA is represented by independent
-query-head and KV-head counts, with `num_q_heads` divisible by
-`num_kv_heads`.
+`num_decode_tokens` while building one set of page CSR metadata. In the default
+`attention_mode="unified"`, `plan` passes the full metadata to the paged
+prefill wrapper and every layer runs the complete packed `[P | D]` query in
+one call. In `attention_mode="split"`, `plan` slices the metadata at the phase
+boundary and prepares both phase-specialized wrappers.
+
+The split path owns a lazily grown contiguous output buffer. Prefill and decode
+write directly into its `[P]` and `[D]` slices with FlashInfer's `out=` API;
+there are no per-phase output tensors, `torch.cat`, or full-output copy. The
+decode slice is zeroed before use for compatibility with FlashInfer backends
+that require zero-initialized caller output. This scratch reuse relies on the
+current inference-only, sequential layer execution on one CUDA stream. Pure
+prefill, pure decode, and mixed batches use the same backend object. GQA is
+represented by independent query-head and KV-head counts, with `num_q_heads`
+divisible by `num_kv_heads`.
 
 The cacheless model-memory warmup occurs before KV allocation and uses the
-existing ragged `flash_attn_varlen_func` path. It is not a serving fallback:
-a serving batch with page metadata must be planned before any layer runs.
+existing ragged `flash_attn_varlen_func` path. Split mode also allocates its
+reusable output scratch during warmup so KV capacity profiling includes that
+memory. Warmup is not a serving fallback: a serving batch with page metadata
+must be planned before any layer runs.
 
 ### Legacy rollback
 
@@ -105,8 +114,9 @@ a serving batch with page metadata must be planned before any layer runs.
 `flash_attn_varlen_func` behavior, including its paged `block_table` path. Its
 cache block size must be divisible by 256. Select it with
 `attention_backend="legacy"` and `kvcache_block_size=256`; attention backend
-selection is separate from per-operator overrides. Both paths store K/V in
-NHD layout before attention.
+selection is separate from per-operator overrides. Legacy attention accepts
+only `attention_mode="unified"`. Both paths store K/V in NHD layout before
+attention.
 
 Neither attention backend currently advertises CUDA Graph support. The
 `enforce_eager` option therefore does not turn phase-specialized attention
