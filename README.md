@@ -81,6 +81,17 @@ outputs = llm.generate(["Hello, Nano-vLLM."], params)
 print(outputs[0]["text"])
 ```
 
+For a runnable example that explicitly enables FlashInfer attention, 16-token
+KV pages, chunked prefill, cache-aware LPM, the custom CUDA SiLU kernel, and
+the FlashInfer normalization/RoPE providers, run:
+
+```bash
+python example_optimized.py \
+  --model /absolute/path/to/Qwen3-model
+```
+
+Add `--debug` to pause in `pdb` immediately before the first generation call.
+
 Operator selection defaults to `auto`: the highest-priority supported
 provider is selected for each registered operator. A provider can be pinned
 without changing layer code:
