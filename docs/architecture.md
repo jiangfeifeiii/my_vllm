@@ -70,8 +70,8 @@ The default `FlashInferAttentionBackend` uses NHD KV pages shaped
 default and is carried consistently by `Config`, `Sequence`, `BlockManager`,
 model-runner metadata, cache allocation, and FlashInfer planning.
 
-One backend instance is shared by all transformer layers. It owns one 64 MiB
-CUDA `uint8` workspace and two available wrappers:
+One backend instance is shared by all transformer layers. For Eager execution
+it owns one 64 MiB CUDA `uint8` workspace and two wrappers:
 
 - `BatchPrefillWithPagedKVCacheWrapper` for prefill query lengths of one or
   more tokens;
@@ -126,9 +126,113 @@ selection is separate from per-operator overrides. Legacy attention accepts
 only `attention_mode="unified"`. Both paths store K/V in NHD layout before
 attention.
 
-Neither attention backend currently advertises CUDA Graph support. The
-`enforce_eager` option therefore does not turn phase-specialized attention
-into a captured graph implicitly.
+## Batch execution and CUDA Graph dispatch
+
+The scheduler decides which requests run and how many tokens they receive. It
+does not select an attention topology or CUDA Graph route. From the scheduler's
+prefill/decode boundary, `ModelRunner.prepare_model_input` records
+`Context.batch_type`. The attention mode chooses unified or phase-specialized
+attention, while the CUDA Graph policy determines whether the transformer body
+is eligible for replay. These are independent decisions.
+
+The user-facing `CUDAGraphPolicy` has two values: `NONE` and
+`FULL_DECODE_ONLY`. `enforce_eager=True` is retained as a compatibility mapping
+to `NONE`. The dispatcher records its per-batch decision separately as
+`RuntimeExecutionMode.EAGER` or `RuntimeExecutionMode.FULL_GRAPH`.
+
+| Policy and runtime conditions | Selected mode |
+|---|---|
+| `NONE` | `EAGER` |
+| `FULL_DECODE_ONLY` + `PURE_DECODE` + unified FlashInfer capability + tensor parallel size 1 + one query token per request + exact captured bucket + valid fixed-buffer metadata | `FULL_GRAPH` |
+| `FULL_DECODE_ONLY` with any condition above unmet | `EAGER` fallback |
+
+The dispatcher reads the backend's `supports_full_decode_graph` capability;
+it does not infer support from a backend-name string. Unified FlashInfer is the
+only backend that currently advertises the capability. Split FlashInfer and
+legacy FlashAttention always execute Eager. Pure prefill and mixed batches also
+execute Eager even when every packed query happens to have length one.
+
+Graph buckets default to exact decode batch sizes `1, 2, 4, 8, 16, 32, 64` and
+are configurable through `cudagraph_batch_sizes`. Initialization omits buckets
+larger than either `max_num_seqs` or `max_num_batched_tokens`. Runtime selection
+never pads a smaller batch to a larger graph; a missing exact bucket is an
+Eager fallback. Invalid tensor dtype/device/shape, page-index capacity overflow,
+invalid page bounds, and malformed slot metadata likewise fall back instead of
+rejecting the scheduled batch.
+
+### Full-decode graph state lifecycle
+
+For each retained bucket, `ModelRunner` owns one `DecodeGraphState` containing:
+
+- one graph-aware FlashInfer unified wrapper with a fixed batch size;
+- fixed-address input IDs, positions, slot mapping, and page CSR buffers;
+- fixed-address attention and final hidden-state outputs;
+- page-index capacity and the captured `torch.cuda.CUDAGraph`.
+
+The graph-aware wrappers are separate from the Eager wrappers. They share a
+dedicated, stable 64 MiB graph workspace because graph buckets execute
+serially; each bucket still has independent fixed metadata and output buffers.
+Their lifetime is the `ModelRunner` lifetime and they are released by
+`ModelRunner.exit`, which explicitly calls `CUDAGraph.reset()` before releasing
+the wrappers and fixed buffers.
+
+With the currently pinned PyTorch 2.11 and FlashInfer 0.6.17 stack, only one
+full-decode capture session is initialized per CUDA process. Reinitializing a
+multi-bucket graph-wrapper set after teardown can hang or access stale CUDA
+state. A later `FULL_DECODE_ONLY` engine in the same process therefore emits a
+warning and falls back to Eager; a fresh process is required to capture again.
+
+Initialization follows this order:
+
+```text
+load extensions/providers and run an Eager model warmup
+    -> allocate per-bucket graph wrappers and fixed buffers
+    -> allocate the KV-cache pool
+    -> warm and capture every retained bucket
+```
+
+Capture uses exact-size synthetic decode inputs and a non-writing slot mapping.
+Those startup inputs are not dummy runtime requests and are not graph-bucket
+padding. Imports, provider resolution, kernel preparation, workspace creation,
+and dynamic tensor allocation all happen before capture.
+
+At serving time the selected paths are:
+
+```text
+Scheduler output
+    -> prepare packed tensors, page metadata, and BatchType
+    -> dispatch
+       EAGER: FlashInfer plan -> model body -> LM head
+       FULL_GRAPH:
+           graph-aware FlashInfer plan and fixed-metadata update (outside graph)
+           -> input ID / position / slot copies (outside graph)
+           -> CUDA Graph replay
+           -> LM head (outside graph)
+```
+
+FlashInfer `plan()` remains outside capture because KV length, page indices,
+and last-page length can change on every decode step. Planning updates the
+wrapper's fixed-address buffers and kernel plan before replay; only `run()`
+inside each layer consumes that stable state.
+
+The captured transformer-body boundary is:
+
+```text
+embedding -> all transformer layers (unified attention and MLP) -> final RMSNorm
+```
+
+Logit computation/LM head, sampling, scheduler postprocessing, request
+completion, and prefix-cache management remain outside. The implementation does
+not support prefill or mixed full graphs, split-attention graphs, bucket
+padding, tensor-parallel graphs, piecewise graphs, speculative-decoding graphs,
+or whole-serving-loop capture.
+
+`ModelRunner.get_cudagraph_stats()` exposes the captured bucket sizes, capture
+time, additional allocated memory, `full_graph_replay_steps`,
+`eager_fallback_steps`, `graph_bucket_hits`, and `graph_bucket_misses`. These
+counters describe runtime coverage only. CUDA Graph measurements are an
+internal `NONE` versus `FULL_DECODE_ONLY` runtime validation and must not be
+mixed into Eager-only cross-framework scheduler conclusions.
 
 ## Cache-aware scheduler
 

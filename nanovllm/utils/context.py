@@ -9,6 +9,11 @@ class BatchType(str, Enum):
     MIXED = "mixed"
 
 
+class RuntimeExecutionMode(str, Enum):
+    EAGER = "eager"
+    FULL_GRAPH = "full_graph"
+
+
 @dataclass
 class Context:
     cu_seqlens_q: torch.Tensor | None = None
@@ -27,6 +32,7 @@ class Context:
     num_prefill_tokens: int | None = None
     num_decode_tokens: int | None = None
     batch_type: BatchType | None = None
+    runtime_mode: RuntimeExecutionMode = RuntimeExecutionMode.EAGER
 
 
 _CONTEXT = Context()
@@ -53,6 +59,7 @@ def set_context(
     num_prefill_tokens=None,
     num_decode_tokens=None,
     batch_type=None,
+    runtime_mode=RuntimeExecutionMode.EAGER,
 ):
     global _CONTEXT
     _CONTEXT = Context(
@@ -72,6 +79,7 @@ def set_context(
         num_prefill_tokens=num_prefill_tokens,
         num_decode_tokens=num_decode_tokens,
         batch_type=batch_type,
+        runtime_mode=runtime_mode,
     )
 
 

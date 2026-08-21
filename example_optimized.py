@@ -43,6 +43,13 @@ def parse_args() -> argparse.Namespace:
         help="FlashInfer attention execution mode.",
     )
     parser.add_argument(
+        "--cudagraph-mode",
+        choices=("none", "full_decode_only"),
+        default="none",
+        help=("CUDA Graph policy; full_decode_only captures only eligible "
+              "unified pure-decode batches."),
+    )
+    parser.add_argument(
         "--debug",
         action="store_true",
         help="Pause in pdb after engine initialization and before generation.",
@@ -94,6 +101,15 @@ def print_runtime_configuration(llm) -> None:
     print(f"  chunked prefill   : {config.chunked_prefill}")
     print(f"  batch token budget: {config.max_num_batched_tokens}")
     print("  prefix cache/LPM  : scheduler built-in")
+    graph_stats = llm.model_runner.get_cudagraph_stats()
+    captured = graph_stats["captured_batch_sizes"] or "none"
+    print(f"  CUDA Graph policy : {graph_stats['policy']}")
+    print(f"  captured batches  : {captured}")
+    print(f"  graph capture time: {graph_stats['capture_time_ms']:.2f} ms")
+    print(
+        f"  graph extra memory: "
+        f"{graph_stats['extra_memory_bytes'] / 2**20:.2f} MiB"
+    )
     for operator, expected_provider in OPERATOR_OVERRIDES.items():
         actual = bindings[operator]
         print(f"  {operator:<19}: {', '.join(sorted(actual))}")
@@ -112,6 +128,15 @@ def print_cache_stats(llm, label: str) -> None:
         f"{label}: used={len(manager.used_block_ids)}, "
         f"free={len(manager.free_block_ids)}, cached_free={cached_free}"
     )
+
+
+def print_cudagraph_stats(llm) -> None:
+    stats = llm.model_runner.get_cudagraph_stats()
+    print("\nCUDA Graph runtime statistics")
+    print(f"  full graph replay steps: {stats['full_graph_replay_steps']}")
+    print(f"  eager fallback steps   : {stats['eager_fallback_steps']}")
+    print(f"  graph bucket hits      : {stats['graph_bucket_hits']}")
+    print(f"  graph bucket misses    : {stats['graph_bucket_misses']}")
 
 
 def print_outputs(label: str, prompts: list[str], outputs: list[dict]) -> None:
@@ -144,7 +169,7 @@ def main() -> None:
     import torch
     from transformers import AutoTokenizer
 
-    from nanovllm import LLM, SamplingParams
+    from nanovllm import CUDAGraphPolicy, LLM, SamplingParams
 
     if not torch.cuda.is_available():
         raise SystemExit("nano-vLLM requires an NVIDIA CUDA GPU")
@@ -194,7 +219,7 @@ def main() -> None:
     try:
         llm = LLM(
             str(model_path),
-            enforce_eager=True,
+            cudagraph_mode=CUDAGraphPolicy(args.cudagraph_mode),
             tensor_parallel_size=1,
             attention_backend="flashinfer",
             attention_mode=args.attention_mode,
@@ -246,6 +271,7 @@ def main() -> None:
         )
         print_outputs("Cache-aware LPM batch", ranked_prompts, ranked_outputs)
         print_cache_stats(llm, "After LPM batch")
+        print_cudagraph_stats(llm)
     finally:
         try:
             if llm is not None:

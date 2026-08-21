@@ -63,7 +63,7 @@ def _load_flashinfer_attention() -> None:
 
 class AttentionBackend:
     """Small batch-planning interface shared by attention implementations."""
-    supports_cudagraph = False
+    supports_full_decode_graph = False
 
     def __init__(
         self,
@@ -209,6 +209,98 @@ class FlashInferAttentionBackend(AttentionBackend):
         self._num_decode_tokens = 0
 
         self._output_buffer: torch.Tensor | None = None
+        self._decode_graph_wrapper = None
+        self._decode_graph_output: torch.Tensor | None = None
+        self.graph_workspace: torch.Tensor | None = None
+
+    @property
+    def supports_full_decode_graph(self) -> bool:
+        return self.attention_mode == "unified"
+
+    def create_full_decode_graph_wrapper(
+        self,
+        qo_indptr_buf: torch.Tensor,
+        paged_kv_indptr_buf: torch.Tensor,
+        paged_kv_indices_buf: torch.Tensor,
+        paged_kv_last_page_len_buf: torch.Tensor,
+    ):
+        if not self.supports_full_decode_graph:
+            raise RuntimeError(
+                "full decode CUDA Graph requires unified FlashInfer attention"
+            )
+        if self.graph_workspace is None:
+            self.graph_workspace = torch.empty(
+                FLASHINFER_WORKSPACE_BYTES,
+                dtype=torch.uint8,
+                device=self.workspace.device,
+            )
+        return _BatchPrefillWithPagedKVCacheWrapper(
+            self.graph_workspace,
+            kv_layout="NHD",
+            use_cuda_graph=True,
+            qo_indptr_buf=qo_indptr_buf,
+            paged_kv_indptr_buf=paged_kv_indptr_buf,
+            paged_kv_indices_buf=paged_kv_indices_buf,
+            paged_kv_last_page_len_buf=paged_kv_last_page_len_buf,
+            backend="auto",
+        )
+
+    def plan_full_decode_graph(self, wrapper, context: Any) -> None:
+        if not self.supports_full_decode_graph:
+            raise RuntimeError(
+                "full decode CUDA Graph requires unified FlashInfer attention"
+            )
+        if getattr(context, "batch_type", None) is not BatchType.PURE_DECODE:
+            raise ValueError("full decode graph planning requires PURE_DECODE")
+        if getattr(context, "num_prefill_seqs", None) != 0:
+            raise ValueError("full decode graph planning requires zero prefills")
+
+        metadata = [getattr(context, name, None) for name in self._PAGE_FIELDS]
+        if any(item is None for item in metadata):
+            raise ValueError("full decode graph planning requires page metadata")
+        q_indptr, kv_indptr, indices, last_page_len = metadata
+        batch_size = last_page_len.numel()
+        if q_indptr.numel() != batch_size + 1:
+            raise ValueError("decode q indptr length must equal batch size + 1")
+        if kv_indptr.numel() != batch_size + 1:
+            raise ValueError("decode KV indptr length must equal batch size + 1")
+        if int(kv_indptr[-1].item()) != indices.numel():
+            raise ValueError("decode KV indptr does not match page indices")
+        query_lengths = q_indptr[1:] - q_indptr[:-1]
+        if not bool(torch.all(query_lengths == 1).item()):
+            raise ValueError("full decode graph requires one query per request")
+        if getattr(context, "num_decode_tokens", None) != batch_size:
+            raise ValueError("decode token count must equal decode batch size")
+
+        wrapper.plan(
+            q_indptr,
+            kv_indptr,
+            indices,
+            last_page_len,
+            self.num_q_heads,
+            self.num_kv_heads,
+            self.head_dim,
+            self.block_size,
+            causal=True,
+            q_data_type=self.dtype,
+            kv_data_type=self.dtype,
+            o_data_type=self.dtype,
+            disable_split_kv=True,
+        )
+
+    def activate_full_decode_graph(
+        self,
+        wrapper,
+        output: torch.Tensor,
+    ) -> None:
+        if self._decode_graph_wrapper is not None:
+            raise RuntimeError("a decode graph wrapper is already active")
+        self._decode_graph_wrapper = wrapper
+        self._decode_graph_output = output
+
+    def deactivate_full_decode_graph(self) -> None:
+        self._decode_graph_wrapper = None
+        self._decode_graph_output = None
 
     def plan(self, context: Any) -> None:
         self._planned = False
@@ -412,6 +504,26 @@ class FlashInferAttentionBackend(AttentionBackend):
         has_v_cache = _has_cache(v_cache)
         if has_k_cache != has_v_cache:
             raise ValueError("key and value caches must both be present or absent")
+
+        graph_wrapper = self._decode_graph_wrapper
+        if graph_wrapper is not None:
+            if not has_k_cache:
+                raise RuntimeError("full decode graph requires allocated KV cache")
+            _validate_flashinfer_inputs(self, q, k_cache, v_cache)
+            output = self._decode_graph_output
+            if output is None or output.shape != q.shape:
+                raise RuntimeError(
+                    "decode graph attention output does not match query shape"
+                )
+            if output.device != q.device or output.dtype != q.dtype:
+                raise RuntimeError(
+                    "decode graph attention output device/dtype mismatch"
+                )
+            return graph_wrapper.run(
+                q,
+                (k_cache, v_cache),
+                out=output,
+            )
 
         if not has_k_cache:
             # This path exists only for the model-runner memory warmup before

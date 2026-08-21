@@ -66,11 +66,11 @@ The default attention path uses FlashInfer with 16-token KV-cache pages. Set
 `chunked_prefill=True` when prompts may exceed the per-batch token budget.
 
 ```python
-from nanovllm import LLM, SamplingParams
+from nanovllm import CUDAGraphPolicy, LLM, SamplingParams
 
 llm = LLM(
     "/absolute/path/to/Qwen3-model",
-    enforce_eager=True,
+    cudagraph_mode=CUDAGraphPolicy.NONE,
     tensor_parallel_size=1,
     attention_backend="flashinfer",
     attention_mode="unified",
@@ -87,16 +87,75 @@ print(outputs[0]["text"])
 to use phase-specialized prefill/decode wrappers writing directly into one
 reusable output buffer; the split path does not concatenate temporary outputs.
 
+### CUDA Graph policy
+
+`cudagraph_mode` accepts `CUDAGraphPolicy.NONE` (`"none"`) and
+`CUDAGraphPolicy.FULL_DECODE_ONLY` (`"full_decode_only"`). The engine default
+is `FULL_DECODE_ONLY`; the compatibility setting `enforce_eager=True` maps to
+`NONE`.
+
+The policy and the execution mode selected for one scheduled batch are
+separate:
+
+| Policy and batch conditions | Runtime mode |
+|---|---|
+| `NONE`, any batch | `EAGER` |
+| `FULL_DECODE_ONLY`, pure decode, unified FlashInfer, tensor parallel size 1, one query token per request, exact captured batch-size bucket, valid page metadata | `FULL_GRAPH` |
+| `FULL_DECODE_ONLY`, any unmet condition above | `EAGER` fallback |
+
+The default configured buckets are `1, 2, 4, 8, 16, 32, 64`, limited by
+`max_num_seqs` and `max_num_batched_tokens` during initialization. Replay
+requires an exact batch-size match: a batch of 12 is never padded to a bucket
+of 16. Pure prefill, mixed batches, split attention, legacy attention, tensor
+parallel execution, missing buckets, and metadata-capacity failures remain
+Eager.
+
+For an eligible replay, FlashInfer planning and metadata/input updates happen
+outside the graph. Replay captures the embedding, transformer layers (including
+unified attention and MLP), and final RMSNorm. Logit computation, sampling,
+scheduler/postprocessing, and prefix-cache management remain outside. Runtime
+coverage can be inspected without a profiler:
+
+```python
+stats = llm.model_runner.get_cudagraph_stats()
+print(stats["full_graph_replay_steps"])
+print(stats["eager_fallback_steps"])
+print(stats["graph_bucket_hits"], stats["graph_bucket_misses"])
+print(stats["captured_batch_sizes"])
+```
+
+On PyTorch 2.11 with FlashInfer 0.6.17, a process captures at most one
+full-decode graph-engine session. `ModelRunner.exit()` explicitly resets every
+graph exec; if another `FULL_DECODE_ONLY` engine is then created in the same
+process, it emits a `RuntimeWarning` and safely runs Eager. Start the new engine
+in a fresh process when it also needs Graph capture. This guard avoids a known
+multi-wrapper CUDA teardown/reinitialization failure.
+
+These statistics validate runtime routing; they are not scheduler performance
+results. Cross-framework scheduler comparisons must disable CUDA Graph in both
+engines.
+
 For a runnable example that explicitly enables FlashInfer attention, 16-token
 KV pages, chunked prefill, cache-aware LPM, the custom CUDA SiLU kernel, and
 the FlashInfer normalization/RoPE providers, run:
 
 ```bash
+# Eager (also the example's default)
 python example_optimized.py \
-  --model /absolute/path/to/Qwen3-model
+  --model /absolute/path/to/Qwen3-model \
+  --cudagraph-mode none
+
+# Full transformer-body graph for eligible unified pure-decode buckets;
+# all other batches automatically use Eager.
+python example_optimized.py \
+  --model /absolute/path/to/Qwen3-model \
+  --attention-mode unified \
+  --cudagraph-mode full_decode_only
 ```
 
-Add `--debug` to pause in `pdb` immediately before the first generation call.
+The example prints the captured buckets, capture time, additional graph memory,
+replay/fallback step counts, and exact-bucket hit/miss counts. Add `--debug` to
+pause in `pdb` immediately before the first generation call.
 
 Operator selection defaults to `auto`: the highest-priority supported
 provider is selected for each registered operator. A provider can be pinned
@@ -161,7 +220,8 @@ python -m pytest -q \
   tests/test_block_manager_baseline.py \
   tests/test_block_manager_chunked.py \
   tests/test_block_manager_planning.py \
-  tests/test_scheduler_cache_aware.py
+  tests/test_scheduler_cache_aware.py \
+  tests/test_cudagraph_runtime.py
 
 FLASHINFER_CUDA_ARCH_LIST=12.0f FLASHINFER_DISABLE_JIT=1 \
 python -m pytest -q \
@@ -181,6 +241,18 @@ export FLASHINFER_DISABLE_JIT=1
 python -m pytest -q \
   tests/test_e2e_baseline.py \
   tests/test_e2e_flashinfer_attention.py
+```
+
+The real-GPU full-decode Graph suite is opt-in and additionally needs the
+local model path:
+
+```bash
+NANOVLLM_TEST_MODEL=/absolute/path/to/Qwen3-model \
+NANOVLLM_CUDAGRAPH_GPU_MEMORY_UTILIZATION=0.35 \
+NANOVLLM_RUN_CUDAGRAPH_TESTS=1 \
+FLASHINFER_CUDA_ARCH_LIST=12.0f FLASHINFER_DISABLE_JIT=1 \
+python -m pytest -q \
+  tests/test_cudagraph_flashinfer.py
 ```
 
 ## Benchmarks
