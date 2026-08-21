@@ -160,9 +160,9 @@ def test_flashinfer_prefill_decode_prefix_reuse_and_mixed_batch():
         )
         _assert_generation(second_outputs, [2])
 
-        # Two cold requests share a full block in the same GPU batch. The
-        # follower reads the leader's page after the layer-wide KV store.
-        in_batch_prefix = list(range(6000, 6016))
+        # Temporary matches only deprioritize. With ample budget both requests
+        # run as independent cold prefills in the same GPU batch.
+        in_batch_prefix = list(range(6000, 6032))
         llm.add_request(
             in_batch_prefix + [6100],
             _sampling_params(1),
@@ -174,9 +174,14 @@ def test_flashinfer_prefill_decode_prefix_reuse_and_mixed_batch():
         leader, follower = list(llm.scheduler.waiting)
         in_batch = llm.scheduler.schedule()
         assert in_batch == [leader, follower]
-        shared_id = leader.block_table[0]
-        assert follower.block_table[0] == shared_id
-        assert block_manager.blocks[shared_id].ref_count == 2
+        assert follower.seq_id in llm.scheduler.temporary_deprioritized
+        leader_prefix_ids = leader.block_table[:2]
+        follower_prefix_ids = follower.block_table[:2]
+        assert set(leader_prefix_ids).isdisjoint(follower_prefix_ids)
+        assert all(
+            block_manager.blocks[block_id].ref_count == 1
+            for block_id in leader_prefix_ids + follower_prefix_ids
+        )
 
         token_ids, logits_indices = llm.model_runner.call(
             "run",
@@ -189,8 +194,14 @@ def test_flashinfer_prefill_decode_prefix_reuse_and_mixed_batch():
             logits_indices,
         )
         assert leader.is_finished and follower.is_finished
-        assert block_manager.blocks[shared_id].ref_count == 0
-        assert shared_id in block_manager.free_block_ids
+        assert all(
+            block_manager.blocks[block_id].ref_count == 0
+            for block_id in leader_prefix_ids + follower_prefix_ids
+        )
+        assert all(
+            block_id in block_manager.free_block_ids
+            for block_id in leader_prefix_ids + follower_prefix_ids
+        )
 
         # Keep one request in decode, then admit a fresh prefill in the same step.
         decode_prompt = list(range(3000, 3012))

@@ -132,23 +132,31 @@ match -> rank -> admit -> protect -> allocate
 1. **Match.** `BlockManager.match_prefix` walks full prompt blocks through a
    chained xxHash64 index. It validates both hash and token content and can
    match blocks that are currently used or cached-free.
-2. **Rank.** Waiting requests are sorted by longest matched prefix (LPM).
-   Python's stable sort keeps FCFS order for ties. A temporary in-batch hash
-   index also detects common full blocks not yet published: leaders remain
-   ahead of followers so followers can reuse blocks produced in this batch.
+2. **Rank.** Temporary-prefix detection first scans the original FCFS waiting
+   order. With the SGLang-compatible defaults, requests with at most 32 real
+   cached tokens are checked, and a 32-token temporary match marks later
+   requests as followers. Ordinary requests are then sorted by longest real
+   persistent match. All followers share one lower priority, so their internal
+   order remains FCFS. `enable_lpm=False` disables both LPM and temporary
+   deprioritization; `enable_in_batch_prefix_deprioritization=False` keeps LPM
+   while disabling only the temporary policy.
 3. **Admit.** The scheduler jointly checks sequence slots, remaining token
-   budget, decode reservations, and required KV blocks. Without chunked
-   prefill, the uncached suffix after real/temporary prefix matching must fit
-   the configured batch budget or scheduling raises an actionable error; with
-   chunking enabled, one prompt may consume a partial chunk and becomes
-   `chunked_req`.
-4. **Protect.** All real matched cached-free blocks for admitted requests are
-   claimed before any allocation. This prevents a later allocation from
-   resetting a block selected during the read-only planning pass.
-5. **Allocate.** The uncached suffix is allocated. Leaders publish only
-   committed full blocks; followers then re-match and claim those blocks
-   before allocating their own suffix. Partial blocks remain unpublished
-   until a later append completes them.
+   budget, decode reservations, and required KV blocks. Only persistent cache
+   matches reduce token or KV budgets. Without chunked prefill, the uncached
+   suffix after persistent matching must fit the configured batch budget or
+   scheduling raises an actionable error; with chunking enabled, one prompt
+   may consume a partial chunk and becomes `chunked_req`.
+4. **Protect.** All persistent matched cached-free blocks for admitted
+   requests are claimed before any allocation. This prevents a later
+   allocation from resetting a block selected during the read-only planning
+   pass.
+5. **Allocate.** Every admitted request allocates its own uncached suffix.
+   A follower admitted in the leader's step remains a cold prefill: temporary
+   matches never affect cached-token counts, block tables, claims, or attention
+   metadata. With limited budget it normally waits, then reuses the leader's
+   committed full blocks through the ordinary persistent index on a later
+   step. Partial blocks remain unpublished until a later append completes
+   them.
 
 Decode requests are preempted from the running tail only when the one-token
 decode reservation or its boundary KV block cannot fit. Decode work has

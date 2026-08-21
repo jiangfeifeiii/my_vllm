@@ -16,6 +16,8 @@ def _scheduler(
     token_budget: int = 64,
     max_num_seqs: int = 8,
     chunked: bool = True,
+    enable_lpm: bool = True,
+    in_batch: bool = True,
 ) -> Scheduler:
     config = SimpleNamespace(
         chunked_prefill=chunked,
@@ -25,6 +27,8 @@ def _scheduler(
         eos=-1,
         num_kvcache_blocks=num_blocks,
         kvcache_block_size=BLOCK_SIZE,
+        enable_lpm=enable_lpm,
+        enable_in_batch_prefix_deprioritization=in_batch,
     )
     return Scheduler(config)
 
@@ -210,7 +214,7 @@ def test_decode_budget_is_reserved_and_batch_order_is_prefill_then_decode():
 
 
 def test_longest_prefix_match_sort_is_stable_for_ties():
-    scheduler = _scheduler()
+    scheduler = _scheduler(in_batch=False)
     first_block = list(range(BLOCK_SIZE))
     second_block = list(range(100, 100 + BLOCK_SIZE))
     prefix = first_block + second_block
@@ -223,7 +227,8 @@ def test_longest_prefix_match_sort_is_stable_for_ties():
     high_second = Sequence(prefix + [3], block_size=BLOCK_SIZE)
     scheduler.waiting.extend([low, high_first, high_second])
 
-    ranked, plans = scheduler._match_waiting()
+    waiting, plans = scheduler._match_waiting()
+    ranked = scheduler._rank_waiting(waiting, plans, set())
 
     assert ranked == [high_first, high_second, low]
     assert len(plans[high_first]) == len(plans[high_second]) == 2
@@ -304,26 +309,268 @@ def test_two_real_prefix_plans_share_cached_free_capacity_and_refcount():
     _assert_block_invariants(scheduler)
 
 
-def test_in_batch_follower_reuses_leaders_full_block_and_runs_after_leader():
-    scheduler = _scheduler(num_blocks=4, token_budget=34, max_num_seqs=2)
-    shared = list(range(BLOCK_SIZE))
-    leader = Sequence(shared + [820_001], block_size=BLOCK_SIZE)
-    follower = Sequence(shared + [820_002], block_size=BLOCK_SIZE)
-    scheduler.add(leader)
-    scheduler.add(follower)
+def test_temporary_deprioritization_uses_original_fcfs_order():
+    scheduler = _scheduler()
+    prefix_a = list(range(2 * BLOCK_SIZE))
+    prefix_b = list(range(100, 100 + 2 * BLOCK_SIZE))
+    a1 = Sequence(prefix_a + [820_001], block_size=BLOCK_SIZE)
+    a2 = Sequence(prefix_a + [820_002], block_size=BLOCK_SIZE)
+    b1 = Sequence(prefix_b + [820_003], block_size=BLOCK_SIZE)
+    b2 = Sequence(prefix_b + [820_004], block_size=BLOCK_SIZE)
+    scheduler.waiting.extend([a1, a2, b1, b2])
+
+    waiting, plans = scheduler._match_waiting()
+    deprioritized = scheduler._detect_temporary_prefixes(waiting, plans)
+    ranked = scheduler._rank_waiting(waiting, plans, deprioritized)
+
+    assert waiting == [a1, a2, b1, b2]
+    assert all(not plans[seq] for seq in waiting)
+    assert ranked == [a1, b1, a2, b2]
+    assert deprioritized == {a2, b2}
+    assert scheduler.temporary_deprioritized == {a2.seq_id, b2.seq_id}
+
+
+@pytest.mark.parametrize(
+    ("shared_blocks", "expected_deprioritized"),
+    [(1, False), (2, True)],
+)
+def test_temporary_prefix_uses_sglang_32_token_thresholds(
+    shared_blocks: int,
+    expected_deprioritized: bool,
+):
+    scheduler = _scheduler()
+    shared = list(range(shared_blocks * BLOCK_SIZE))
+    leader = Sequence(shared + [825_001], block_size=BLOCK_SIZE)
+    follower = Sequence(shared + [825_002], block_size=BLOCK_SIZE)
+    waiting = [leader, follower]
+    plans = {seq: [] for seq in waiting}
+
+    deprioritized = scheduler._detect_temporary_prefixes(waiting, plans)
+
+    assert (follower in deprioritized) is expected_deprioritized
+
+
+def test_exact_32_token_prompt_is_eligible_for_temporary_detection():
+    scheduler = _scheduler()
+    shared = list(range(2 * BLOCK_SIZE))
+    leader = Sequence(shared, block_size=BLOCK_SIZE)
+    follower = Sequence(shared, block_size=BLOCK_SIZE)
+    waiting = [leader, follower]
+    plans = {seq: [] for seq in waiting}
+
+    deprioritized = scheduler._detect_temporary_prefixes(waiting, plans)
+
+    assert deprioritized == {follower}
+
+
+
+def test_temporary_followers_keep_fcfs_order_regardless_of_real_hit_length():
+    scheduler = _scheduler()
+    ordinary = Sequence([826_001], block_size=BLOCK_SIZE)
+    follower_first = Sequence([826_002], block_size=BLOCK_SIZE)
+    follower_second = Sequence([826_003], block_size=BLOCK_SIZE)
+    waiting = [follower_first, ordinary, follower_second]
+    plans = {
+        follower_first: [],
+        ordinary: [1],
+        follower_second: [1, 2, 3],
+    }
+
+    ranked = scheduler._rank_waiting(
+        waiting,
+        plans,
+        {follower_first, follower_second},
+    )
+
+    assert ranked == [ordinary, follower_first, follower_second]
+
+
+def test_temporary_follower_does_not_publish_unique_suffix_to_index():
+    scheduler = _scheduler()
+    shared = list(range(2 * BLOCK_SIZE))
+    leader_tail = list(range(100, 100 + BLOCK_SIZE))
+    follower_tail = list(range(200, 200 + BLOCK_SIZE))
+    leader = Sequence(
+        shared + leader_tail + [827_001],
+        block_size=BLOCK_SIZE,
+    )
+    follower = Sequence(
+        shared + follower_tail + [827_002],
+        block_size=BLOCK_SIZE,
+    )
+    waiting = [leader, follower]
+    plans = {seq: [] for seq in waiting}
+
+    deprioritized = scheduler._detect_temporary_prefixes(waiting, plans)
+
+    follower_hash = -1
+    for block_index in range(3):
+        follower_hash = scheduler.block_manager.compute_hash(
+            follower.block(block_index),
+            follower_hash,
+        )
+    assert deprioritized == {follower}
+    assert follower_hash not in scheduler.temporary_prefix_index
+    assert all(
+        owner_seq_id == leader.seq_id
+        for owner_seq_id, _ in scheduler.temporary_prefix_index.values()
+    )
+
+
+def test_large_persistent_hit_skips_temporary_detection():
+    scheduler = _scheduler()
+    prefix = list(range(3 * BLOCK_SIZE))
+    _publish_free_prefix(scheduler, prefix)
+    first = Sequence(prefix + [828_001], block_size=BLOCK_SIZE)
+    second = Sequence(prefix + [828_002], block_size=BLOCK_SIZE)
+    waiting = [first, second]
+    plans = {
+        seq: scheduler.block_manager.match_prefix(seq)
+        for seq in waiting
+    }
+
+    deprioritized = scheduler._detect_temporary_prefixes(waiting, plans)
+
+    assert all(len(plan) == 3 for plan in plans.values())
+    assert not deprioritized
+    assert scheduler.temporary_prefix_index == {}
+
+def test_disabling_lpm_preserves_fcfs_and_skips_temporary_detection():
+    scheduler = _scheduler(
+        token_budget=66,
+        max_num_seqs=2,
+        enable_lpm=False,
+    )
+    shared = list(range(2 * BLOCK_SIZE))
+    first = Sequence(shared + [829_001], block_size=BLOCK_SIZE)
+    follower = Sequence(shared + [829_002], block_size=BLOCK_SIZE)
+    other = Sequence(list(range(500, 533)), block_size=BLOCK_SIZE)
+    scheduler.waiting.extend([first, follower, other])
+
+    scheduled = scheduler.schedule()
+
+    assert scheduled == [first, follower]
+    assert scheduler.temporary_deprioritized == set()
+    assert scheduler.temporary_prefix_index == {}
+    scheduler.block_manager.deallocate(first)
+    scheduler.block_manager.deallocate(follower)
+    _assert_block_invariants(scheduler)
+
+
+def test_disabling_temporary_policy_keeps_persistent_lpm_enabled():
+    scheduler = _scheduler(
+        num_blocks=8,
+        token_budget=33,
+        max_num_seqs=1,
+        in_batch=False,
+    )
+    prefix = list(range(2 * BLOCK_SIZE))
+    prefix_ids = _publish_free_prefix(scheduler, prefix)
+    cold = Sequence(list(range(500, 533)), block_size=BLOCK_SIZE)
+    cached = Sequence(prefix + [829_101], block_size=BLOCK_SIZE)
+    scheduler.waiting.extend([cold, cached])
+
+    scheduled = scheduler.schedule()
+
+    assert scheduled == [cached]
+    assert list(scheduler.waiting) == [cold]
+    assert cached.block_table[:2] == prefix_ids
+    assert cached.num_cached_tokens == 2 * BLOCK_SIZE
+    assert cached.num_new_tokens == 1
+    assert scheduler.temporary_deprioritized == set()
+    assert scheduler.temporary_prefix_index == {}
+    scheduler.block_manager.deallocate(cached)
+    _assert_block_invariants(scheduler)
+
+
+def test_temporary_follower_reuses_persistent_cache_on_next_step():
+    scheduler = _scheduler(num_blocks=8, token_budget=33, max_num_seqs=1)
+    params = SamplingParams(max_tokens=1, ignore_eos=True)
+    shared = list(range(2 * BLOCK_SIZE))
+    cold = Sequence(
+        list(range(900, 900 + 2 * BLOCK_SIZE + 1)),
+        params,
+        block_size=BLOCK_SIZE,
+    )
+    leader = Sequence(
+        shared + [830_001],
+        params,
+        block_size=BLOCK_SIZE,
+    )
+    follower = Sequence(
+        shared + [830_002],
+        params,
+        block_size=BLOCK_SIZE,
+    )
+    scheduler.waiting.extend([leader, cold, follower])
+
+    first = scheduler.schedule()
+
+    assert first == [leader]
+    assert follower.seq_id in scheduler.temporary_deprioritized
+    assert list(scheduler.waiting) == [cold, follower]
+    assert follower.block_table == []
+    assert follower.num_cached_tokens == 0
+    leader_prefix_ids = leader.block_table[:2]
+
+    scheduler.postprocess(first, [83_100], [0])
+
+    assert leader.status is SequenceStatus.FINISHED
+    assert scheduler.block_manager.match_prefix(follower) == leader_prefix_ids
+    assert all(
+        block_id in scheduler.block_manager.free_block_ids
+        for block_id in leader_prefix_ids
+    )
+
+    second = scheduler.schedule()
+
+    assert second == [follower]
+    assert follower.block_table[:2] == leader_prefix_ids
+    assert list(scheduler.waiting) == [cold]
+    assert follower.num_cached_tokens == 2 * BLOCK_SIZE
+    assert follower.num_new_tokens == 1
+    scheduler.postprocess(second, [83_101], [0])
+    assert follower.status is SequenceStatus.FINISHED
+    assert list(scheduler.waiting) == [cold]
+
+    third = scheduler.schedule()
+    assert third == [cold]
+    scheduler.postprocess(third, [83_102], [0])
+    assert cold.status is SequenceStatus.FINISHED
+    assert scheduler.is_finished()
+    _assert_block_invariants(scheduler)
+
+
+def test_ample_budget_temporary_follower_runs_as_independent_cold_prefill():
+    scheduler = _scheduler(num_blocks=8, token_budget=66, max_num_seqs=2)
+    params = SamplingParams(max_tokens=1, ignore_eos=True)
+    shared = list(range(2 * BLOCK_SIZE))
+    leader = Sequence(
+        shared + [840_001],
+        params,
+        block_size=BLOCK_SIZE,
+    )
+    follower = Sequence(
+        shared + [840_002],
+        params,
+        block_size=BLOCK_SIZE,
+    )
+    scheduler.waiting.extend([leader, follower])
 
     scheduled = scheduler.schedule()
 
     assert scheduled == [leader, follower]
     assert follower.seq_id in scheduler.temporary_deprioritized
-    shared_id = leader.block_table[0]
-    assert follower.block_table[0] == shared_id
-    assert scheduler.block_manager.blocks[shared_id].ref_count == 2
-    assert scheduler.block_manager.blocks[shared_id].token_ids == shared
-    _assert_block_invariants(scheduler)
+    assert leader.num_cached_tokens == follower.num_cached_tokens == 0
+    assert leader.num_new_tokens == follower.num_new_tokens == 2 * BLOCK_SIZE + 1
+    assert set(leader.block_table[:2]).isdisjoint(follower.block_table[:2])
+    assert all(
+        scheduler.block_manager.blocks[block_id].ref_count == 1
+        for block_id in leader.block_table[:2] + follower.block_table[:2]
+    )
 
-    scheduler.block_manager.deallocate(leader)
-    scheduler.block_manager.deallocate(follower)
+    scheduler.postprocess(scheduled, [84_100, 84_101], [0, 1])
+    assert leader.status is follower.status is SequenceStatus.FINISHED
     _assert_block_invariants(scheduler)
 
 

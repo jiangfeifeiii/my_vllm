@@ -5,6 +5,10 @@ from nanovllm.engine.block_manager import BlockManager
 from nanovllm.engine.sequence import Sequence, SequenceStatus
 
 
+IN_BATCH_PREFIX_CACHING_CHECK_THRESHOLD = 32
+IN_BATCH_PREFIX_CACHING_DEPRIORITIZE_THRESHOLD = 32
+
+
 class Scheduler:
 
     def __init__(self, config: Config):
@@ -12,6 +16,12 @@ class Scheduler:
         self.max_model_len = config.max_model_len
         self.max_num_seqs = config.max_num_seqs
         self.max_num_batched_tokens = config.max_num_batched_tokens
+        self.enable_lpm = getattr(config, "enable_lpm", True)
+        self.enable_in_batch_prefix_deprioritization = getattr(
+            config,
+            "enable_in_batch_prefix_deprioritization",
+            True,
+        )
         self.eos = config.eos
         self.block_manager = BlockManager(
             config.num_kvcache_blocks,
@@ -49,31 +59,34 @@ class Scheduler:
             self.preempt(self.running.pop())
 
     def _match_waiting(self) -> tuple[list[Sequence], dict[Sequence, list[int]]]:
+        waiting = list(self.waiting)
         real_prefixes = {
             seq: self.block_manager.match_prefix(seq)
-            for seq in self.waiting
+            for seq in waiting
         }
-        # Python's sort is stable, so equal prefix lengths retain FCFS order.
-        ranked = sorted(
-            self.waiting,
-            key=lambda seq: -len(real_prefixes[seq]),
-        )
-        return ranked, real_prefixes
+        return waiting, real_prefixes
 
     def _detect_temporary_prefixes(
         self,
-        ranked: list[Sequence],
+        waiting: list[Sequence],
         real_prefixes: dict[Sequence, list[int]],
-    ) -> tuple[list[Sequence], dict[Sequence, tuple[Sequence, int]]]:
+    ) -> set[Sequence]:
         block_size = self.block_manager.block_size
         index: dict[int, tuple[Sequence, int, list[int]]] = {}
-        sources: dict[Sequence, tuple[Sequence, int]] = {}
         deprioritized: set[Sequence] = set()
 
-        for seq in ranked:
+        # Detection intentionally walks the original FCFS queue. The first
+        # request that exposes a full-block prefix is its implicit leader.
+        for seq in waiting:
+            persistent_tokens = len(real_prefixes[seq]) * block_size
+            if persistent_tokens > IN_BATCH_PREFIX_CACHING_CHECK_THRESHOLD:
+                continue
+
             prefix_hash = -1
-            real_blocks = len(real_prefixes[seq])
-            for block_index in range(max(seq.num_blocks - 1, 0)):
+            matching_temporary_prefix = True
+            matched_blocks = 0
+            eligible_blocks: list[tuple[int, int, list[int]]] = []
+            for block_index in range(seq.num_blocks):
                 token_ids = seq.block(block_index)
                 if len(token_ids) != block_size:
                     break
@@ -81,22 +94,31 @@ class Scheduler:
                     token_ids,
                     prefix_hash,
                 )
-                prior = index.get(prefix_hash)
-                if (
-                    prior is not None
-                    and prior[2] == token_ids
-                    and block_index + 1 > real_blocks
-                ):
-                    sources[seq] = (prior[0], block_index + 1)
-                    deprioritized.add(seq)
-                else:
-                    index.setdefault(
-                        prefix_hash,
-                        (seq, block_index + 1, token_ids),
-                    )
+                eligible_blocks.append(
+                    (prefix_hash, block_index + 1, token_ids)
+                )
+                if matching_temporary_prefix:
+                    prior = index.get(prefix_hash)
+                    if prior is not None and prior[2] == token_ids:
+                        matched_blocks = block_index + 1
+                    else:
+                        matching_temporary_prefix = False
 
-        leaders = [seq for seq in ranked if seq not in deprioritized]
-        followers = [seq for seq in ranked if seq in deprioritized]
+            temporary_tokens = matched_blocks * block_size
+            if (
+                temporary_tokens >= IN_BATCH_PREFIX_CACHING_DEPRIORITIZE_THRESHOLD
+            ):
+                deprioritized.add(seq)
+                continue
+
+            # A follower is never inserted into the temporary index. Requests
+            # below the threshold become implicit leaders for later requests.
+            for block_hash, num_blocks, token_ids in eligible_blocks:
+                index.setdefault(
+                    block_hash,
+                    (seq, num_blocks, token_ids),
+                )
+
         self.temporary_prefix_index = {
             block_hash: (seq.seq_id, num_blocks)
             for block_hash, (seq, num_blocks, _) in index.items()
@@ -104,7 +126,26 @@ class Scheduler:
         self.temporary_deprioritized = {
             seq.seq_id for seq in deprioritized
         }
-        return leaders + followers, sources
+        return deprioritized
+
+    def _rank_waiting(
+        self,
+        waiting: list[Sequence],
+        real_prefixes: dict[Sequence, list[int]],
+        temporary_deprioritized: set[Sequence],
+    ) -> list[Sequence]:
+        # Python's sort is stable, so requests with the same priority preserve
+        # their original FCFS order. Temporary matches only affect priority;
+        # they never count as computed cache in admission or allocation.
+        def priority(seq: Sequence) -> tuple[int, int]:
+            if seq in temporary_deprioritized:
+                return (1, 0)
+            persistent_priority = (
+                -len(real_prefixes[seq]) if self.enable_lpm else 0
+            )
+            return (0, persistent_priority)
+
+        return sorted(waiting, key=priority)
 
     def schedule(self) -> list[Sequence]:
         block_manager = self.block_manager
@@ -152,17 +193,24 @@ class Scheduler:
 
         ranked: list[Sequence] = []
         real_prefixes: dict[Sequence, list[int]] = {}
-        temporary_sources: dict[Sequence, tuple[Sequence, int]] = {}
         if allow_waiting and self.waiting and token_budget > 0:
-            ranked, real_prefixes = self._match_waiting()
-            ranked, temporary_sources = self._detect_temporary_prefixes(
-                ranked,
+            waiting, real_prefixes = self._match_waiting()
+            temporary_deprioritized = (
+                self._detect_temporary_prefixes(waiting, real_prefixes)
+                if (
+                    self.enable_lpm
+                    and self.enable_in_batch_prefix_deprioritization
+                )
+                else set()
+            )
+            ranked = self._rank_waiting(
+                waiting,
                 real_prefixes,
+                temporary_deprioritized,
             )
 
         admitted: list[Sequence] = []
-        admission: dict[Sequence, tuple[list[int], int, int]] = {}
-        admitted_context_end: dict[Sequence, int] = {}
+        admission: dict[Sequence, tuple[list[int], int]] = {}
         protected_free_ids: set[int] = set()
         active = len(decode_seqs) + (self.chunked_req is not None)
 
@@ -170,19 +218,7 @@ class Scheduler:
             if active + len(admitted) >= self.max_num_seqs:
                 break
             real_blocks = real_prefixes[seq]
-            effective_blocks = len(real_blocks)
-            source = temporary_sources.get(seq)
-            if source is not None and source[0] in admitted_context_end:
-                source_full_blocks = (
-                    admitted_context_end[source[0]]
-                    // block_manager.block_size
-                )
-                effective_blocks = max(
-                    effective_blocks,
-                    min(source[1], source_full_blocks),
-                )
-
-            cached_tokens = effective_blocks * block_manager.block_size
+            cached_tokens = len(real_blocks) * block_manager.block_size
             remaining = len(seq) - cached_tokens
             assert remaining > 0
             if not self.enable_chunked and remaining > token_budget:
@@ -210,8 +246,7 @@ class Scheduler:
 
             context_end = cached_tokens + num_new_tokens
             admitted.append(seq)
-            admission[seq] = (real_blocks, effective_blocks, context_end)
-            admitted_context_end[seq] = context_end
+            admission[seq] = (real_blocks, context_end)
             protected_free_ids.update(newly_protected)
             free_budget -= len(newly_protected) + new_blocks
             token_budget -= num_new_tokens
@@ -229,19 +264,10 @@ class Scheduler:
             block_manager.may_append(scheduled_chunked)
             prefill_seqs.append(scheduled_chunked)
 
-        # Leaders precede followers. A leader publishes only committed full
-        # blocks, then a follower can claim those blocks before allocating its
-        # own suffix. The layer stores all batch K/V before attention runs.
+        # Allocation consumes only the persistent prefix plan protected above.
+        # Temporary matches never alter cached tokens or block tables.
         for seq in admitted:
-            _, effective_blocks, context_end = admission[seq]
-            additional_blocks = effective_blocks - len(seq.block_table)
-            if additional_blocks:
-                temporary = block_manager.match_prefix(
-                    seq,
-                    max_blocks=additional_blocks,
-                )
-                assert len(temporary) == additional_blocks
-                block_manager.claim_prefix(seq, temporary)
+            _, context_end = admission[seq]
             seq.num_new_tokens = context_end - seq.num_cached_tokens
             assert seq.num_new_tokens > 0
             block_manager.allocate_new(seq)

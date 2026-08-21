@@ -17,6 +17,8 @@ class Config:
     kvcache_block_size: int = 16
     num_kvcache_blocks: int = -1
     chunked_prefill: bool = False
+    enable_lpm: bool = True
+    enable_in_batch_prefix_deprioritization: bool = True
     attention_backend: str = "flashinfer"
     operator_overrides: dict[str, str] = field(default_factory=dict)
 
