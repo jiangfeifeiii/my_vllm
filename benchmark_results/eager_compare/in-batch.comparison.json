@@ -13,8 +13,8 @@
       "initial_persistent_hit_tokens_after_first_step": 0,
       "max_step_prefill_admission_count": 16,
       "output_token_count": 1024,
-      "output_token_throughput_tps": 681.3234230039808,
-      "p95_ttft_ms": 657.8945680012112,
+      "output_token_throughput_tps": 654.0401327804125,
+      "p95_ttft_ms": 512.9684200001066,
       "preemption_count": 0,
       "prompt_token_conservation": {
         "accounted_prompt_tokens": 34816,
@@ -26,7 +26,7 @@
         "total_prompt_tokens": 34816
       },
       "request_count": 16,
-      "request_throughput_rps": 10.6456784844372,
+      "request_throughput_rps": 10.219377074693945,
       "same_step_hit_tokens": 24576,
       "same_step_hit_tokens_after_first_step": 0,
       "same_step_reused_blocks": 1536,
@@ -46,7 +46,7 @@
         20
       ],
       "scheduler_step_count": 64,
-      "total_batch_completion_s": 1.5029572819985333,
+      "total_batch_completion_s": 1.5656531589993392,
       "total_prompt_tokens": 34816
     },
     "vllm": {
@@ -59,29 +59,29 @@
     {
       "lower_is_better": true,
       "metric": "p95_ttft_ms",
-      "nano_over_vllm_ratio": 2.320958582519012,
-      "nano_relative_delta_percent": 132.09585825190123,
-      "nano_vllm": 657.8945680012112,
+      "nano_over_vllm_ratio": 1.687937574372735,
+      "nano_relative_delta_percent": 68.7937574372735,
+      "nano_vllm": 512.9684200001066,
       "unit": "ms",
-      "vllm": 283.4581249990151
+      "vllm": 303.9024829995469
     },
     {
       "lower_is_better": false,
       "metric": "request_throughput_rps",
-      "nano_over_vllm_ratio": 0.657499979431244,
-      "nano_relative_delta_percent": -34.25000205687559,
-      "nano_vllm": 10.6456784844372,
+      "nano_over_vllm_ratio": 0.6152746784712878,
+      "nano_relative_delta_percent": -38.47253215287122,
+      "nano_vllm": 10.219377074693945,
       "unit": "requests/s",
-      "vllm": 16.191146490447057
+      "vllm": 16.609454983723726
     },
     {
       "lower_is_better": true,
       "metric": "total_batch_completion_s",
-      "nano_over_vllm_ratio": 1.5209125951076499,
-      "nano_relative_delta_percent": 52.091259510765,
-      "nano_vllm": 1.5029572819985333,
+      "nano_over_vllm_ratio": 1.6252903540327732,
+      "nano_relative_delta_percent": 62.52903540327731,
+      "nano_vllm": 1.5656531589993392,
       "unit": "s",
-      "vllm": 0.9881943820000743
+      "vllm": 0.9633067440008745
     }
   ],
   "comparison_kind": "eager_only_cross_framework",

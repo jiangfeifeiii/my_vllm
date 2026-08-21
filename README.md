@@ -374,7 +374,9 @@ The runs used RTX 5070 SM120, driver 596.49, Torch 2.11.0+cu128,
 CUDA 12.8, FlashInfer/cubin 0.6.17, and the
 `flashinfer-jit-cache 0.6.17+cu129` AOT cache with JIT disabled. Each schema-v2
 JSON records the source commit/dirty state, command, runtime configuration, and
-exact benchmark-script SHA-256.
+exact benchmark-script SHA-256. The post-audit runs use source commit
+`1544a51` and
+`bench_scheduler.py=5f39e7910c2234324460e8342a8a5a7e169a94b7c1ee8222c0625df34d46f23c`.
 
 #### Scheduler LPM
 
@@ -385,8 +387,13 @@ persistent prefixes before the cold requests can evict them.
 
 | Policy | Initial persistent hits | Same-step hits | Computed prompt | Cached-block evictions | Preemptions | P95 TTFT (ms) | Throughput (req/s) | Completion (s) |
 |---|---:|---:|---:|---:|---:|---:|---:|---:|
-| FCFS | 32,768 | 4,096 | 23,647 | 1,471 | 0 | 5,980.160 | 3.408 | 7.043 |
-| LPM | 49,152 | 0 | 11,359 | 704 | 0 | 4,401.418 | 4.694 | 5.113 |
+| FCFS | 32,768 | 4,096 | 23,647 | 1,471 | 0 | 5,384.363 | 3.915 | 6.130 |
+| LPM | 49,152 | 0 | 11,359 | 704 | 0 | 4,179.009 | 4.919 | 4.879 |
+
+In this targeted run, LPM reduced computed prompt work by 51.96%, cache
+evictions by 52.14%, P95 TTFT by 22.39%, and completion time by 20.40%;
+request throughput increased by 25.63%. The causal gate—not timing alone—also
+requires the first LPM batch to be `A1,B1,C1,A2`.
 
 Raw request/step traces:
 [`lpm_fcfs.json`](benchmark_results/rtx5070/lpm_fcfs.json) and
@@ -405,13 +412,14 @@ full blocks.
 
 | Policy | Initial hits | Same-step hits | Computed prompt | Duplicate prefill | First-step admissions | Reused requests / blocks | Preemptions | P95 TTFT (ms) | Throughput (req/s) | Completion (s) |
 |---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|
-| Same-step OFF | 0 | 0 | 34,816 | 24,576 | 4 | 0 / 0 | 0 | 959.989 | 8.238 | 1.942 |
-| Same-step ON | 0 | 24,576 | 10,240 | 0 | 16 | 12 / 1,536 | 0 | 382.066 | 12.331 | 1.298 |
+| Same-step OFF | 0 | 0 | 34,816 | 24,576 | 4 | 0 / 0 | 0 | 973.228 | 8.465 | 1.890 |
+| Same-step ON | 0 | 24,576 | 10,240 | 0 | 16 | 12 / 1,536 | 0 | 383.414 | 12.666 | 1.263 |
 
 The requested `same_step_reused_requests` count is serialized as
 `same_step_reused_request_count`; `same_step_reused_blocks` is the exact
 full-block total. Prompt-token conservation is asserted per request and in
-aggregate in both files.
+aggregate in both files. ON reduced computed prompt work by 70.59%, P95 TTFT
+by 60.60%, and completion time by 33.17%; throughput increased by 49.63%.
 
 Raw request/step traces:
 [`in_batch_off.json`](benchmark_results/rtx5070/in_batch_off.json) and
@@ -558,15 +566,17 @@ files only; they are not compared across backends.
 
 | Workload | Backend | P95 TTFT (ms) | Throughput (req/s) | Completion (s) |
 |---|---|---:|---:|---:|
-| Long-prefix KV pressure | nano-vLLM | 4,345.851 | 4.719 | 5.086 |
-| Long-prefix KV pressure | vLLM | **3,650.615** | **5.674** | **4.230** |
-| In-batch prefix burst | nano-vLLM | 657.895 | 10.646 | 1.503 |
-| In-batch prefix burst | vLLM | **283.458** | **16.191** | **0.988** |
+| Long-prefix KV pressure | nano-vLLM | 4,860.693 | **4.379** | **5.481** |
+| Long-prefix KV pressure | vLLM | **4,361.968** | 4.336 | 5.535 |
+| In-batch prefix burst | nano-vLLM | 512.968 | 10.219 | 1.566 |
+| In-batch prefix burst | vLLM | **303.902** | **16.609** | **0.963** |
 
-vLLM was faster on all three comparable metrics in both RTX 5070 runs. This
-result is limited to these traces and software stacks; it must not be
-generalized to other workloads or attributed to CUDA Graph, because both
-backends were forced to Eager execution.
+On the In-batch trace, vLLM was faster on all three comparable metrics. On the
+LPM trace, vLLM had 11.43% lower P95 TTFT, while nano-vLLM had 0.99% higher
+request throughput and 0.98% lower completion time in this single run. These
+small LPM timing deltas should be treated as near-parity, not a generalized
+performance claim. Neither workload may be attributed to CUDA Graph because
+both backends were forced to Eager execution.
 
 Cache counters remain backend-native rather than cross-framework comparable.
 On the In-batch trace, nano-vLLM records 24,576 same-step hit tokens and 10,240

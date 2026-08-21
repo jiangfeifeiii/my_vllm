@@ -72,8 +72,8 @@
       "initial_persistent_hit_tokens_after_first_step": 0,
       "max_step_prefill_admission_count": 16,
       "output_token_count": 1024,
-      "output_token_throughput_tps": 681.3234230039808,
-      "p95_ttft_ms": 657.8945680012112,
+      "output_token_throughput_tps": 654.0401327804125,
+      "p95_ttft_ms": 512.9684200001066,
       "preemption_count": 0,
       "prompt_token_conservation": {
         "accounted_prompt_tokens": 34816,
@@ -85,7 +85,7 @@
         "total_prompt_tokens": 34816
       },
       "request_count": 16,
-      "request_throughput_rps": 10.6456784844372,
+      "request_throughput_rps": 10.219377074693945,
       "same_step_hit_tokens": 24576,
       "same_step_hit_tokens_after_first_step": 0,
       "same_step_reused_blocks": 1536,
@@ -105,20 +105,20 @@
         20
       ],
       "scheduler_step_count": 64,
-      "total_batch_completion_s": 1.5029572819985333,
+      "total_batch_completion_s": 1.5656531589993392,
       "total_prompt_tokens": 34816
     },
     "comparable": {
-      "p95_ttft_ms": 657.8945680012112,
-      "request_throughput_rps": 10.6456784844372,
-      "total_batch_completion_s": 1.5029572819985333
+      "p95_ttft_ms": 512.9684200001066,
+      "request_throughput_rps": 10.219377074693945,
+      "total_batch_completion_s": 1.5656531589993392
     }
   },
   "priming_requests": [],
   "requests": [
     {
       "arrival_order": 0,
-      "completion_ms": 1502.9453499992087,
+      "completion_ms": 1565.641921999486,
       "computed_prompt_tokens": 2176,
       "initial_persistent_hit_tokens": 0,
       "output_tokens": 64,
@@ -128,11 +128,11 @@
       "request_id": "A1",
       "requested_output_len": 64,
       "same_step_hit_tokens": 0,
-      "ttft_ms": 657.8945680012112
+      "ttft_ms": 512.9684200001066
     },
     {
       "arrival_order": 1,
-      "completion_ms": 1502.9453499992087,
+      "completion_ms": 1565.641921999486,
       "computed_prompt_tokens": 128,
       "initial_persistent_hit_tokens": 0,
       "output_tokens": 64,
@@ -142,11 +142,11 @@
       "request_id": "A2",
       "requested_output_len": 64,
       "same_step_hit_tokens": 2048,
-      "ttft_ms": 657.8945680012112
+      "ttft_ms": 512.9684200001066
     },
     {
       "arrival_order": 2,
-      "completion_ms": 1502.9453499992087,
+      "completion_ms": 1565.641921999486,
       "computed_prompt_tokens": 128,
       "initial_persistent_hit_tokens": 0,
       "output_tokens": 64,
@@ -156,11 +156,11 @@
       "request_id": "A3",
       "requested_output_len": 64,
       "same_step_hit_tokens": 2048,
-      "ttft_ms": 657.8945680012112
+      "ttft_ms": 512.9684200001066
     },
     {
       "arrival_order": 3,
-      "completion_ms": 1502.9453499992087,
+      "completion_ms": 1565.641921999486,
       "computed_prompt_tokens": 128,
       "initial_persistent_hit_tokens": 0,
       "output_tokens": 64,
@@ -170,11 +170,11 @@
       "request_id": "A4",
       "requested_output_len": 64,
       "same_step_hit_tokens": 2048,
-      "ttft_ms": 657.8945680012112
+      "ttft_ms": 512.9684200001066
     },
     {
       "arrival_order": 4,
-      "completion_ms": 1502.9453499992087,
+      "completion_ms": 1565.641921999486,
       "computed_prompt_tokens": 2176,
       "initial_persistent_hit_tokens": 0,
       "output_tokens": 64,
@@ -184,11 +184,11 @@
       "request_id": "B1",
       "requested_output_len": 64,
       "same_step_hit_tokens": 0,
-      "ttft_ms": 657.8945680012112
+      "ttft_ms": 512.9684200001066
     },
     {
       "arrival_order": 5,
-      "completion_ms": 1502.9453499992087,
+      "completion_ms": 1565.641921999486,
       "computed_prompt_tokens": 128,
       "initial_persistent_hit_tokens": 0,
       "output_tokens": 64,
@@ -198,11 +198,11 @@
       "request_id": "B2",
       "requested_output_len": 64,
       "same_step_hit_tokens": 2048,
-      "ttft_ms": 657.8945680012112
+      "ttft_ms": 512.9684200001066
     },
     {
       "arrival_order": 6,
-      "completion_ms": 1502.9453499992087,
+      "completion_ms": 1565.641921999486,
       "computed_prompt_tokens": 128,
       "initial_persistent_hit_tokens": 0,
       "output_tokens": 64,
@@ -212,11 +212,11 @@
       "request_id": "B3",
       "requested_output_len": 64,
       "same_step_hit_tokens": 2048,
-      "ttft_ms": 657.8945680012112
+      "ttft_ms": 512.9684200001066
     },
     {
       "arrival_order": 7,
-      "completion_ms": 1502.9453499992087,
+      "completion_ms": 1565.641921999486,
       "computed_prompt_tokens": 128,
       "initial_persistent_hit_tokens": 0,
       "output_tokens": 64,
@@ -226,11 +226,11 @@
       "request_id": "B4",
       "requested_output_len": 64,
       "same_step_hit_tokens": 2048,
-      "ttft_ms": 657.8945680012112
+      "ttft_ms": 512.9684200001066
     },
     {
       "arrival_order": 8,
-      "completion_ms": 1502.9453499992087,
+      "completion_ms": 1565.641921999486,
       "computed_prompt_tokens": 2176,
       "initial_persistent_hit_tokens": 0,
       "output_tokens": 64,
@@ -240,11 +240,11 @@
       "request_id": "C1",
       "requested_output_len": 64,
       "same_step_hit_tokens": 0,
-      "ttft_ms": 657.8945680012112
+      "ttft_ms": 512.9684200001066
     },
     {
       "arrival_order": 9,
-      "completion_ms": 1502.9453499992087,
+      "completion_ms": 1565.641921999486,
       "computed_prompt_tokens": 128,
       "initial_persistent_hit_tokens": 0,
       "output_tokens": 64,
@@ -254,11 +254,11 @@
       "request_id": "C2",
       "requested_output_len": 64,
       "same_step_hit_tokens": 2048,
-      "ttft_ms": 657.8945680012112
+      "ttft_ms": 512.9684200001066
     },
     {
       "arrival_order": 10,
-      "completion_ms": 1502.9453499992087,
+      "completion_ms": 1565.641921999486,
       "computed_prompt_tokens": 128,
       "initial_persistent_hit_tokens": 0,
       "output_tokens": 64,
@@ -268,11 +268,11 @@
       "request_id": "C3",
       "requested_output_len": 64,
       "same_step_hit_tokens": 2048,
-      "ttft_ms": 657.8945680012112
+      "ttft_ms": 512.9684200001066
     },
     {
       "arrival_order": 11,
-      "completion_ms": 1502.9453499992087,
+      "completion_ms": 1565.641921999486,
       "computed_prompt_tokens": 128,
       "initial_persistent_hit_tokens": 0,
       "output_tokens": 64,
@@ -282,11 +282,11 @@
       "request_id": "C4",
       "requested_output_len": 64,
       "same_step_hit_tokens": 2048,
-      "ttft_ms": 657.8945680012112
+      "ttft_ms": 512.9684200001066
     },
     {
       "arrival_order": 12,
-      "completion_ms": 1502.9453499992087,
+      "completion_ms": 1565.641921999486,
       "computed_prompt_tokens": 2176,
       "initial_persistent_hit_tokens": 0,
       "output_tokens": 64,
@@ -296,11 +296,11 @@
       "request_id": "D1",
       "requested_output_len": 64,
       "same_step_hit_tokens": 0,
-      "ttft_ms": 657.8945680012112
+      "ttft_ms": 512.9684200001066
     },
     {
       "arrival_order": 13,
-      "completion_ms": 1502.9453499992087,
+      "completion_ms": 1565.641921999486,
       "computed_prompt_tokens": 128,
       "initial_persistent_hit_tokens": 0,
       "output_tokens": 64,
@@ -310,11 +310,11 @@
       "request_id": "D2",
       "requested_output_len": 64,
       "same_step_hit_tokens": 2048,
-      "ttft_ms": 657.8945680012112
+      "ttft_ms": 512.9684200001066
     },
     {
       "arrival_order": 14,
-      "completion_ms": 1502.9453499992087,
+      "completion_ms": 1565.641921999486,
       "computed_prompt_tokens": 128,
       "initial_persistent_hit_tokens": 0,
       "output_tokens": 64,
@@ -324,11 +324,11 @@
       "request_id": "D3",
       "requested_output_len": 64,
       "same_step_hit_tokens": 2048,
-      "ttft_ms": 657.8945680012112
+      "ttft_ms": 512.9684200001066
     },
     {
       "arrival_order": 15,
-      "completion_ms": 1502.9453499992087,
+      "completion_ms": 1565.641921999486,
       "computed_prompt_tokens": 128,
       "initial_persistent_hit_tokens": 0,
       "output_tokens": 64,
@@ -338,7 +338,7 @@
       "request_id": "D4",
       "requested_output_len": 64,
       "same_step_hit_tokens": 2048,
-      "ttft_ms": 657.8945680012112
+      "ttft_ms": 512.9684200001066
     }
   ],
   "result_kind": "eager_only_cross_framework",
@@ -369,34 +369,13 @@
     "framework": {
       "git": {
         "dirty": true,
-        "head": "c173ecba02c49be2dd9e4f1b2391903eb0b1980d",
+        "head": "1544a51e0ea23f63e2283611fe179ded9b98d58d",
         "root": "/workspace/aiinfra/nano-vllm-v1",
         "status_porcelain": [
-          "M README.md",
-          " M bench_cudagraph.py",
-          " M bench_eager_compare.py",
-          " M bench_scheduler.py",
-          " M benchmark_results/eager_compare/in-batch.trace.json",
-          " M benchmark_results/eager_compare/lpm.trace.json",
-          " M benchmark_results/rtx5070/in_batch_off.json",
+          "M benchmark_results/rtx5070/in_batch_off.json",
           " M benchmark_results/rtx5070/in_batch_on.json",
           " M benchmark_results/rtx5070/lpm.json",
-          " M benchmark_results/rtx5070/lpm_fcfs.json",
-          " M docs/architecture.md",
-          " M nanovllm/config.py",
-          " M nanovllm/engine/block_manager.py",
-          " M nanovllm/engine/scheduler.py",
-          " M nanovllm/engine/sequence.py",
-          " M tests/test_bench_cudagraph.py",
-          " M tests/test_bench_eager_compare.py",
-          " M tests/test_block_manager_chunked.py",
-          " M tests/test_block_manager_config.py",
-          " M tests/test_block_manager_planning.py",
-          " M tests/test_e2e_flashinfer_attention.py",
-          " M tests/test_scheduler_cache_aware.py",
-          "?? README.md.orig",
-          "?? docs/architecture.md.orig",
-          "?? tests/test_bench_scheduler_metrics.py"
+          " M benchmark_results/rtx5070/lpm_fcfs.json"
         ]
       },
       "module_path": "/workspace/aiinfra/nano-vllm-v1/nanovllm/__init__.py",
@@ -415,7 +394,7 @@
     "hostname": "7d4488b3d310",
     "platform": "Linux-6.6.114.1-microsoft-standard-WSL2-x86_64-with-glibc2.35",
     "python": "3.10.12",
-    "timestamp_utc": "2026-08-21T16:23:49.684349+00:00",
+    "timestamp_utc": "2026-08-21T16:40:47.791349+00:00",
     "torch": "2.11.0+cu128",
     "torch_cuda": "12.8"
   },
@@ -425,8 +404,8 @@
       "claimed_prefix_tokens": 24576,
       "computed_prompt_tokens": 10240,
       "computed_shared_prefix_tokens": 8192,
-      "duration_ms": 657.8740580007434,
-      "end_ms": 657.8945680012112,
+      "duration_ms": 512.9445999991731,
+      "end_ms": 512.9684200001066,
       "evicted_blocks": [],
       "free_blocks_after_schedule": 1600,
       "initial_persistent_hit_tokens": 0,
@@ -754,7 +733,7 @@
         "D3",
         "D4"
       ],
-      "start_ms": 0.020510000467766076,
+      "start_ms": 0.023820000933483243,
       "step": 0,
       "used_blocks_after_schedule": 640,
       "waiting_after_schedule": []
@@ -764,8 +743,8 @@
       "claimed_prefix_tokens": 0,
       "computed_prompt_tokens": 0,
       "computed_shared_prefix_tokens": 0,
-      "duration_ms": 112.9634309982066,
-      "end_ms": 770.8843379987229,
+      "duration_ms": 87.63795000049868,
+      "end_ms": 600.6686060027278,
       "evicted_blocks": [],
       "free_blocks_after_schedule": 1584,
       "initial_persistent_hit_tokens": 0,
@@ -994,7 +973,7 @@
         "D3",
         "D4"
       ],
-      "start_ms": 657.9209070005163,
+      "start_ms": 513.0306560022291,
       "step": 1,
       "used_blocks_after_schedule": 656,
       "waiting_after_schedule": []
@@ -1004,8 +983,8 @@
       "claimed_prefix_tokens": 0,
       "computed_prompt_tokens": 0,
       "computed_shared_prefix_tokens": 0,
-      "duration_ms": 11.241672000323888,
-      "end_ms": 782.1457350000856,
+      "duration_ms": 44.969809998292476,
+      "end_ms": 645.6619950004097,
       "evicted_blocks": [],
       "free_blocks_after_schedule": 1584,
       "initial_persistent_hit_tokens": 0,
@@ -1234,7 +1213,7 @@
         "D3",
         "D4"
       ],
-      "start_ms": 770.9040629997617,
+      "start_ms": 600.6921850021172,
       "step": 2,
       "used_blocks_after_schedule": 656,
       "waiting_after_schedule": []
@@ -1244,8 +1223,8 @@
       "claimed_prefix_tokens": 0,
       "computed_prompt_tokens": 0,
       "computed_shared_prefix_tokens": 0,
-      "duration_ms": 16.692432000127155,
-      "end_ms": 798.8544340005319,
+      "duration_ms": 31.27899099854403,
+      "end_ms": 676.9661409998662,
       "evicted_blocks": [],
       "free_blocks_after_schedule": 1584,
       "initial_persistent_hit_tokens": 0,
@@ -1474,7 +1453,7 @@
         "D3",
         "D4"
       ],
-      "start_ms": 782.1620020004048,
+      "start_ms": 645.6871500013222,
       "step": 3,
       "used_blocks_after_schedule": 656,
       "waiting_after_schedule": []
@@ -1484,8 +1463,8 @@
       "claimed_prefix_tokens": 0,
       "computed_prompt_tokens": 0,
       "computed_shared_prefix_tokens": 0,
-      "duration_ms": 12.87314100045478,
-      "end_ms": 811.7483249989164,
+      "duration_ms": 38.39622300074552,
+      "end_ms": 715.3848170019046,
       "evicted_blocks": [],
       "free_blocks_after_schedule": 1584,
       "initial_persistent_hit_tokens": 0,
@@ -1714,7 +1693,7 @@
         "D3",
         "D4"
       ],
-      "start_ms": 798.8751839984616,
+      "start_ms": 676.9885940011591,
       "step": 4,
       "used_blocks_after_schedule": 656,
       "waiting_after_schedule": []
@@ -1724,8 +1703,8 @@
       "claimed_prefix_tokens": 0,
       "computed_prompt_tokens": 0,
       "computed_shared_prefix_tokens": 0,
-      "duration_ms": 12.594872998306528,
-      "end_ms": 824.3618589985999,
+      "duration_ms": 35.934292998717865,
+      "end_ms": 751.3414269997156,
       "evicted_blocks": [],
       "free_blocks_after_schedule": 1584,
       "initial_persistent_hit_tokens": 0,
@@ -1954,7 +1933,7 @@
         "D3",
         "D4"
       ],
-      "start_ms": 811.7669860002934,
+      "start_ms": 715.4071340009978,
       "step": 5,
       "used_blocks_after_schedule": 656,
       "waiting_after_schedule": []
@@ -1964,8 +1943,8 @@
       "claimed_prefix_tokens": 0,
       "computed_prompt_tokens": 0,
       "computed_shared_prefix_tokens": 0,
-      "duration_ms": 12.399055998685071,
-      "end_ms": 836.7794490004599,
+      "duration_ms": 18.77527200122131,
+      "end_ms": 770.140362001257,
       "evicted_blocks": [],
       "free_blocks_after_schedule": 1584,
       "initial_persistent_hit_tokens": 0,
@@ -2194,7 +2173,7 @@
         "D3",
         "D4"
       ],
-      "start_ms": 824.3803930017748,
+      "start_ms": 751.3650900000357,
       "step": 6,
       "used_blocks_after_schedule": 656,
       "waiting_after_schedule": []
@@ -2204,8 +2183,8 @@
       "claimed_prefix_tokens": 0,
       "computed_prompt_tokens": 0,
       "computed_shared_prefix_tokens": 0,
-      "duration_ms": 12.484635000873823,
-      "end_ms": 849.2813129996648,
+      "duration_ms": 17.950083998584887,
+      "end_ms": 788.1133800001408,
       "evicted_blocks": [],
       "free_blocks_after_schedule": 1584,
       "initial_persistent_hit_tokens": 0,
@@ -2434,7 +2413,7 @@
         "D3",
         "D4"
       ],
-      "start_ms": 836.796677998791,
+      "start_ms": 770.1632960015559,
       "step": 7,
       "used_blocks_after_schedule": 656,
       "waiting_after_schedule": []
@@ -2444,8 +2423,8 @@
       "claimed_prefix_tokens": 0,
       "computed_prompt_tokens": 0,
       "computed_shared_prefix_tokens": 0,
-      "duration_ms": 11.805960999481613,
-      "end_ms": 861.104178999085,
+      "duration_ms": 20.554218997858698,
+      "end_ms": 808.6929109995253,
       "evicted_blocks": [],
       "free_blocks_after_schedule": 1584,
       "initial_persistent_hit_tokens": 0,
@@ -2674,7 +2653,7 @@
         "D3",
         "D4"
       ],
-      "start_ms": 849.2982179996034,
+      "start_ms": 788.1386920016666,
       "step": 8,
       "used_blocks_after_schedule": 656,
       "waiting_after_schedule": []
@@ -2684,8 +2663,8 @@
       "claimed_prefix_tokens": 0,
       "computed_prompt_tokens": 0,
       "computed_shared_prefix_tokens": 0,
-      "duration_ms": 11.764295999455499,
-      "end_ms": 872.8883580006368,
+      "duration_ms": 18.957717999001034,
+      "end_ms": 827.672863000771,
       "evicted_blocks": [],
       "free_blocks_after_schedule": 1584,
       "initial_persistent_hit_tokens": 0,
@@ -2914,7 +2893,7 @@
         "D3",
         "D4"
       ],
-      "start_ms": 861.1240620011813,
+      "start_ms": 808.71514500177,
       "step": 9,
       "used_blocks_after_schedule": 656,
       "waiting_after_schedule": []
@@ -2924,8 +2903,8 @@
       "claimed_prefix_tokens": 0,
       "computed_prompt_tokens": 0,
       "computed_shared_prefix_tokens": 0,
-      "duration_ms": 15.476304000912933,
-      "end_ms": 888.3821000017633,
+      "duration_ms": 19.54925199970603,
+      "end_ms": 847.248596001009,
       "evicted_blocks": [],
       "free_blocks_after_schedule": 1584,
       "initial_persistent_hit_tokens": 0,
@@ -3154,7 +3133,7 @@
         "D3",
         "D4"
       ],
-      "start_ms": 872.9057960008504,
+      "start_ms": 827.699344001303,
       "step": 10,
       "used_blocks_after_schedule": 656,
       "waiting_after_schedule": []
@@ -3164,8 +3143,8 @@
       "claimed_prefix_tokens": 0,
       "computed_prompt_tokens": 0,
       "computed_shared_prefix_tokens": 0,
-      "duration_ms": 17.829164000431774,
-      "end_ms": 906.2293700008013,
+      "duration_ms": 19.71291299923905,
+      "end_ms": 866.9864450021123,
       "evicted_blocks": [],
       "free_blocks_after_schedule": 1584,
       "initial_persistent_hit_tokens": 0,
@@ -3394,7 +3373,7 @@
         "D3",
         "D4"
       ],
-      "start_ms": 888.4002060003695,
+      "start_ms": 847.2735320028733,
       "step": 11,
       "used_blocks_after_schedule": 656,
       "waiting_after_schedule": []
@@ -3404,8 +3383,8 @@
       "claimed_prefix_tokens": 0,
       "computed_prompt_tokens": 0,
       "computed_shared_prefix_tokens": 0,
-      "duration_ms": 13.93488800022169,
-      "end_ms": 920.1876619990799,
+      "duration_ms": 23.1170219994965,
+      "end_ms": 890.1260660022672,
       "evicted_blocks": [],
       "free_blocks_after_schedule": 1584,
       "initial_persistent_hit_tokens": 0,
@@ -3634,7 +3613,7 @@
         "D3",
         "D4"
       ],
-      "start_ms": 906.2527739988582,
+      "start_ms": 867.0090440027707,
       "step": 12,
       "used_blocks_after_schedule": 656,
       "waiting_after_schedule": []
@@ -3644,8 +3623,8 @@
       "claimed_prefix_tokens": 0,
       "computed_prompt_tokens": 0,
       "computed_shared_prefix_tokens": 0,
-      "duration_ms": 12.769783999829087,
-      "end_ms": 932.9853099989123,
+      "duration_ms": 40.01873100060038,
+      "end_ms": 930.1659770026163,
       "evicted_blocks": [],
       "free_blocks_after_schedule": 1584,
       "initial_persistent_hit_tokens": 0,
@@ -3874,7 +3853,7 @@
         "D3",
         "D4"
       ],
-      "start_ms": 920.2155259990832,
+      "start_ms": 890.1472460020159,
       "step": 13,
       "used_blocks_after_schedule": 656,
       "waiting_after_schedule": []
@@ -3884,8 +3863,8 @@
       "claimed_prefix_tokens": 0,
       "computed_prompt_tokens": 0,
       "computed_shared_prefix_tokens": 0,
-      "duration_ms": 14.10936899992521,
-      "end_ms": 947.113067999453,
+      "duration_ms": 26.425153999298345,
+      "end_ms": 956.6126350000559,
       "evicted_blocks": [],
       "free_blocks_after_schedule": 1584,
       "initial_persistent_hit_tokens": 0,
@@ -4114,7 +4093,7 @@
         "D3",
         "D4"
       ],
-      "start_ms": 933.0036989995278,
+      "start_ms": 930.1874810007575,
       "step": 14,
       "used_blocks_after_schedule": 656,
       "waiting_after_schedule": []
@@ -4124,8 +4103,8 @@
       "claimed_prefix_tokens": 0,
       "computed_prompt_tokens": 0,
       "computed_shared_prefix_tokens": 0,
-      "duration_ms": 12.18933299969649,
-      "end_ms": 959.3225339995115,
+      "duration_ms": 33.05305699905148,
+      "end_ms": 989.7334890010825,
       "evicted_blocks": [],
       "free_blocks_after_schedule": 1584,
       "initial_persistent_hit_tokens": 0,
@@ -4354,7 +4333,7 @@
         "D3",
         "D4"
       ],
-      "start_ms": 947.133200999815,
+      "start_ms": 956.680432002031,
       "step": 15,
       "used_blocks_after_schedule": 656,
       "waiting_after_schedule": []
@@ -4364,8 +4343,8 @@
       "claimed_prefix_tokens": 0,
       "computed_prompt_tokens": 0,
       "computed_shared_prefix_tokens": 0,
-      "duration_ms": 23.88533799967263,
-      "end_ms": 983.2245360012166,
+      "duration_ms": 27.34414100268623,
+      "end_ms": 1017.1049250020587,
       "evicted_blocks": [],
       "free_blocks_after_schedule": 1584,
       "initial_persistent_hit_tokens": 0,
@@ -4594,7 +4573,7 @@
         "D3",
         "D4"
       ],
-      "start_ms": 959.339198001544,
+      "start_ms": 989.7607839993725,
       "step": 16,
       "used_blocks_after_schedule": 656,
       "waiting_after_schedule": []
@@ -4604,8 +4583,8 @@
       "claimed_prefix_tokens": 0,
       "computed_prompt_tokens": 0,
       "computed_shared_prefix_tokens": 0,
-      "duration_ms": 11.1339750001207,
-      "end_ms": 994.3762410002819,
+      "duration_ms": 21.675763000530424,
+      "end_ms": 1038.8093380024657,
       "evicted_blocks": [],
       "free_blocks_after_schedule": 1568,
       "initial_persistent_hit_tokens": 0,
@@ -4834,7 +4813,7 @@
         "D3",
         "D4"
       ],
-      "start_ms": 983.2422660001612,
+      "start_ms": 1017.1335750019352,
       "step": 17,
       "used_blocks_after_schedule": 672,
       "waiting_after_schedule": []
@@ -4844,8 +4823,8 @@
       "claimed_prefix_tokens": 0,
       "computed_prompt_tokens": 0,
       "computed_shared_prefix_tokens": 0,
-      "duration_ms": 13.983549000840867,
-      "end_ms": 1008.3753260005324,
+      "duration_ms": 19.717805997061078,
+      "end_ms": 1058.5473749997618,
       "evicted_blocks": [],
       "free_blocks_after_schedule": 1568,
       "initial_persistent_hit_tokens": 0,
@@ -5074,7 +5053,7 @@
         "D3",
         "D4"
       ],
-      "start_ms": 994.3917769996915,
+      "start_ms": 1038.8295690027007,
       "step": 18,
       "used_blocks_after_schedule": 672,
       "waiting_after_schedule": []
@@ -5084,8 +5063,8 @@
       "claimed_prefix_tokens": 0,
       "computed_prompt_tokens": 0,
       "computed_shared_prefix_tokens": 0,
-      "duration_ms": 13.147956000466365,
-      "end_ms": 1021.5443560009589,
+      "duration_ms": 18.064724001305876,
+      "end_ms": 1076.6290120009216,
       "evicted_blocks": [],
       "free_blocks_after_schedule": 1568,
       "initial_persistent_hit_tokens": 0,
@@ -5314,7 +5293,7 @@
         "D3",
         "D4"
       ],
-      "start_ms": 1008.3964000004926,
+      "start_ms": 1058.5642879996158,
       "step": 19,
       "used_blocks_after_schedule": 672,
       "waiting_after_schedule": []
@@ -5324,8 +5303,8 @@
       "claimed_prefix_tokens": 0,
       "computed_prompt_tokens": 0,
       "computed_shared_prefix_tokens": 0,
-      "duration_ms": 11.39248000254156,
-      "end_ms": 1032.9531870011124,
+      "duration_ms": 15.134569999645464,
+      "end_ms": 1091.7826750010136,
       "evicted_blocks": [],
       "free_blocks_after_schedule": 1568,
       "initial_persistent_hit_tokens": 0,
@@ -5554,7 +5533,7 @@
         "D3",
         "D4"
       ],
-      "start_ms": 1021.5607069985708,
+      "start_ms": 1076.648105001368,
       "step": 20,
       "used_blocks_after_schedule": 672,
       "waiting_after_schedule": []
@@ -5564,8 +5543,8 @@
       "claimed_prefix_tokens": 0,
       "computed_prompt_tokens": 0,
       "computed_shared_prefix_tokens": 0,
-      "duration_ms": 10.198152998782462,
-      "end_ms": 1043.1647969999176,
+      "duration_ms": 17.53463499699137,
+      "end_ms": 1109.3351199997414,
       "evicted_blocks": [],
       "free_blocks_after_schedule": 1568,
       "initial_persistent_hit_tokens": 0,
@@ -5794,7 +5773,7 @@
         "D3",
         "D4"
       ],
-      "start_ms": 1032.9666440011351,
+      "start_ms": 1091.80048500275,
       "step": 21,
       "used_blocks_after_schedule": 672,
       "waiting_after_schedule": []
@@ -5804,8 +5783,8 @@
       "claimed_prefix_tokens": 0,
       "computed_prompt_tokens": 0,
       "computed_shared_prefix_tokens": 0,
-      "duration_ms": 10.874539002543315,
-      "end_ms": 1054.0509550010029,
+      "duration_ms": 16.105529997730628,
+      "end_ms": 1125.4585749993566,
       "evicted_blocks": [],
       "free_blocks_after_schedule": 1568,
       "initial_persistent_hit_tokens": 0,
@@ -6034,7 +6013,7 @@
         "D3",
         "D4"
       ],
-      "start_ms": 1043.1764159984596,
+      "start_ms": 1109.353045001626,
       "step": 22,
       "used_blocks_after_schedule": 672,
       "waiting_after_schedule": []
@@ -6044,8 +6023,8 @@
       "claimed_prefix_tokens": 0,
       "computed_prompt_tokens": 0,
       "computed_shared_prefix_tokens": 0,
-      "duration_ms": 10.563512001681374,
-      "end_ms": 1064.6276420011418,
+      "duration_ms": 18.287482002051547,
+      "end_ms": 1143.7646910017065,
       "evicted_blocks": [],
       "free_blocks_after_schedule": 1568,
       "initial_persistent_hit_tokens": 0,
@@ -6274,7 +6253,7 @@
         "D3",
         "D4"
       ],
-      "start_ms": 1054.0641299994604,
+      "start_ms": 1125.477208999655,
       "step": 23,
       "used_blocks_after_schedule": 672,
       "waiting_after_schedule": []
@@ -6284,8 +6263,8 @@
       "claimed_prefix_tokens": 0,
       "computed_prompt_tokens": 0,
       "computed_shared_prefix_tokens": 0,
-      "duration_ms": 10.609503002342535,
-      "end_ms": 1075.2494740008842,
+      "duration_ms": 14.149159000226064,
+      "end_ms": 1157.937137002591,
       "evicted_blocks": [],
       "free_blocks_after_schedule": 1568,
       "initial_persistent_hit_tokens": 0,
@@ -6514,7 +6493,7 @@
         "D3",
         "D4"
       ],
-      "start_ms": 1064.6399709985417,
+      "start_ms": 1143.787978002365,
       "step": 24,
       "used_blocks_after_schedule": 672,
       "waiting_after_schedule": []
@@ -6524,8 +6503,8 @@
       "claimed_prefix_tokens": 0,
       "computed_prompt_tokens": 0,
       "computed_shared_prefix_tokens": 0,
-      "duration_ms": 12.274034001166001,
-      "end_ms": 1087.5375300020096,
+      "duration_ms": 10.601002002658788,
+      "end_ms": 1168.5522770021635,
       "evicted_blocks": [],
       "free_blocks_after_schedule": 1568,
       "initial_persistent_hit_tokens": 0,
@@ -6754,7 +6733,7 @@
         "D3",
         "D4"
       ],
-      "start_ms": 1075.2634960008436,
+      "start_ms": 1157.9512749995047,
       "step": 25,
       "used_blocks_after_schedule": 672,
       "waiting_after_schedule": []
@@ -6764,8 +6743,8 @@
       "claimed_prefix_tokens": 0,
       "computed_prompt_tokens": 0,
       "computed_shared_prefix_tokens": 0,
-      "duration_ms": 21.645250999426935,
-      "end_ms": 1109.201232000487,
+      "duration_ms": 10.056009999971138,
+      "end_ms": 1178.6213600025803,
       "evicted_blocks": [],
       "free_blocks_after_schedule": 1568,
       "initial_persistent_hit_tokens": 0,
@@ -6994,7 +6973,7 @@
         "D3",
         "D4"
       ],
-      "start_ms": 1087.55598100106,
+      "start_ms": 1168.5653500026092,
       "step": 26,
       "used_blocks_after_schedule": 672,
       "waiting_after_schedule": []
@@ -7004,8 +6983,8 @@
       "claimed_prefix_tokens": 0,
       "computed_prompt_tokens": 0,
       "computed_shared_prefix_tokens": 0,
-      "duration_ms": 15.032768998935353,
-      "end_ms": 1124.2546360008419,
+      "duration_ms": 9.788147999643115,
+      "end_ms": 1188.4215169993695,
       "evicted_blocks": [],
       "free_blocks_after_schedule": 1568,
       "initial_persistent_hit_tokens": 0,
@@ -7234,7 +7213,7 @@
         "D3",
         "D4"
       ],
-      "start_ms": 1109.2218670019065,
+      "start_ms": 1178.6333689997264,
       "step": 27,
       "used_blocks_after_schedule": 672,
       "waiting_after_schedule": []
@@ -7244,8 +7223,8 @@
       "claimed_prefix_tokens": 0,
       "computed_prompt_tokens": 0,
       "computed_shared_prefix_tokens": 0,
-      "duration_ms": 16.006228001060663,
-      "end_ms": 1140.284225999494,
+      "duration_ms": 10.268655998515896,
+      "end_ms": 1198.7020150008902,
       "evicted_blocks": [],
       "free_blocks_after_schedule": 1568,
       "initial_persistent_hit_tokens": 0,
@@ -7474,7 +7453,7 @@
         "D3",
         "D4"
       ],
-      "start_ms": 1124.2779979984334,
+      "start_ms": 1188.4333590023743,
       "step": 28,
       "used_blocks_after_schedule": 672,
       "waiting_after_schedule": []
@@ -7484,8 +7463,8 @@
       "claimed_prefix_tokens": 0,
       "computed_prompt_tokens": 0,
       "computed_shared_prefix_tokens": 0,
-      "duration_ms": 13.2951960003993,
-      "end_ms": 1153.5993040015455,
+      "duration_ms": 11.353437002981082,
+      "end_ms": 1210.0663340024767,
       "evicted_blocks": [],
       "free_blocks_after_schedule": 1568,
       "initial_persistent_hit_tokens": 0,
@@ -7714,7 +7693,7 @@
         "D3",
         "D4"
       ],
-      "start_ms": 1140.3041080011462,
+      "start_ms": 1198.7128969994956,
       "step": 29,
       "used_blocks_after_schedule": 672,
       "waiting_after_schedule": []
@@ -7724,8 +7703,8 @@
       "claimed_prefix_tokens": 0,
       "computed_prompt_tokens": 0,
       "computed_shared_prefix_tokens": 0,
-      "duration_ms": 14.800786000705557,
-      "end_ms": 1168.4186040001805,
+      "duration_ms": 10.44226099838852,
+      "end_ms": 1220.5210110005282,
       "evicted_blocks": [],
       "free_blocks_after_schedule": 1568,
       "initial_persistent_hit_tokens": 0,
@@ -7954,7 +7933,7 @@
         "D3",
         "D4"
       ],
-      "start_ms": 1153.617817999475,
+      "start_ms": 1210.0787500021397,
       "step": 30,
       "used_blocks_after_schedule": 672,
       "waiting_after_schedule": []
@@ -7964,8 +7943,8 @@
       "claimed_prefix_tokens": 0,
       "computed_prompt_tokens": 0,
       "computed_shared_prefix_tokens": 0,
-      "duration_ms": 10.762996000266867,
-      "end_ms": 1179.2020259999845,
+      "duration_ms": 10.65050500255893,
+      "end_ms": 1231.1827840021579,
       "evicted_blocks": [],
       "free_blocks_after_schedule": 1568,
       "initial_persistent_hit_tokens": 0,
@@ -8194,7 +8173,7 @@
         "D3",
         "D4"
       ],
-      "start_ms": 1168.4390299997176,
+      "start_ms": 1220.532278999599,
       "step": 31,
       "used_blocks_after_schedule": 672,
       "waiting_after_schedule": []
@@ -8204,8 +8183,8 @@
       "claimed_prefix_tokens": 0,
       "computed_prompt_tokens": 0,
       "computed_shared_prefix_tokens": 0,
-      "duration_ms": 10.337132996937726,
-      "end_ms": 1189.5519159988908,
+      "duration_ms": 10.39460099855205,
+      "end_ms": 1241.5884020010708,
       "evicted_blocks": [],
       "free_blocks_after_schedule": 1568,
       "initial_persistent_hit_tokens": 0,
@@ -8434,7 +8413,7 @@
         "D3",
         "D4"
       ],
-      "start_ms": 1179.214783001953,
+      "start_ms": 1231.1938010025187,
       "step": 32,
       "used_blocks_after_schedule": 672,
       "waiting_after_schedule": []
@@ -8444,8 +8423,8 @@
       "claimed_prefix_tokens": 0,
       "computed_prompt_tokens": 0,
       "computed_shared_prefix_tokens": 0,
-      "duration_ms": 11.020964000636013,
-      "end_ms": 1200.5863260019396,
+      "duration_ms": 9.613196998543572,
+      "end_ms": 1251.2133780001022,
       "evicted_blocks": [],
       "free_blocks_after_schedule": 1552,
       "initial_persistent_hit_tokens": 0,
@@ -8674,7 +8653,7 @@
         "D3",
         "D4"
       ],
-      "start_ms": 1189.5653620013036,
+      "start_ms": 1241.6001810015587,
       "step": 33,
       "used_blocks_after_schedule": 688,
       "waiting_after_schedule": []
@@ -8684,8 +8663,8 @@
       "claimed_prefix_tokens": 0,
       "computed_prompt_tokens": 0,
       "computed_shared_prefix_tokens": 0,
-      "duration_ms": 10.429827998450492,
-      "end_ms": 1211.0294539997994,
+      "duration_ms": 10.491518998605898,
+      "end_ms": 1261.7157060012687,
       "evicted_blocks": [],
       "free_blocks_after_schedule": 1552,
       "initial_persistent_hit_tokens": 0,
@@ -8914,7 +8893,7 @@
         "D3",
         "D4"
       ],
-      "start_ms": 1200.599626001349,
+      "start_ms": 1251.2241870026628,
       "step": 34,
       "used_blocks_after_schedule": 688,
       "waiting_after_schedule": []
@@ -8924,8 +8903,8 @@
       "claimed_prefix_tokens": 0,
       "computed_prompt_tokens": 0,
       "computed_shared_prefix_tokens": 0,
-      "duration_ms": 10.307313001248986,
-      "end_ms": 1221.3481979997596,
+      "duration_ms": 10.300666002876824,
+      "end_ms": 1272.0281620022433,
       "evicted_blocks": [],
       "free_blocks_after_schedule": 1552,
       "initial_persistent_hit_tokens": 0,
@@ -9154,7 +9133,7 @@
         "D3",
         "D4"
       ],
-      "start_ms": 1211.0408849985106,
+      "start_ms": 1261.7274959993665,
       "step": 35,
       "used_blocks_after_schedule": 688,
       "waiting_after_schedule": []
@@ -9164,8 +9143,8 @@
       "claimed_prefix_tokens": 0,
       "computed_prompt_tokens": 0,
       "computed_shared_prefix_tokens": 0,
-      "duration_ms": 10.003891999076586,
-      "end_ms": 1231.3622670008044,
+      "duration_ms": 9.848400997725548,
+      "end_ms": 1281.8883010004356,
       "evicted_blocks": [],
       "free_blocks_after_schedule": 1552,
       "initial_persistent_hit_tokens": 0,
@@ -9394,7 +9373,7 @@
         "D3",
         "D4"
       ],
-      "start_ms": 1221.3583750017278,
+      "start_ms": 1272.03990000271,
       "step": 36,
       "used_blocks_after_schedule": 688,
       "waiting_after_schedule": []
@@ -9404,8 +9383,8 @@
       "claimed_prefix_tokens": 0,
       "computed_prompt_tokens": 0,
       "computed_shared_prefix_tokens": 0,
-      "duration_ms": 9.939626997947926,
-      "end_ms": 1241.3133139998536,
+      "duration_ms": 10.316329000488622,
+      "end_ms": 1292.2142390016234,
       "evicted_blocks": [],
       "free_blocks_after_schedule": 1552,
       "initial_persistent_hit_tokens": 0,
@@ -9634,7 +9613,7 @@
         "D3",
         "D4"
       ],
-      "start_ms": 1231.3736870019056,
+      "start_ms": 1281.8979100011347,
       "step": 37,
       "used_blocks_after_schedule": 688,
       "waiting_after_schedule": []
@@ -9644,8 +9623,8 @@
       "claimed_prefix_tokens": 0,
       "computed_prompt_tokens": 0,
       "computed_shared_prefix_tokens": 0,
-      "duration_ms": 10.147856999537908,
-      "end_ms": 1251.4712849988427,
+      "duration_ms": 9.745118997670943,
+      "end_ms": 1301.9705219994648,
       "evicted_blocks": [],
       "free_blocks_after_schedule": 1552,
       "initial_persistent_hit_tokens": 0,
@@ -9874,7 +9853,7 @@
         "D3",
         "D4"
       ],
-      "start_ms": 1241.3234279993048,
+      "start_ms": 1292.225403001794,
       "step": 38,
       "used_blocks_after_schedule": 688,
       "waiting_after_schedule": []
@@ -9884,8 +9863,8 @@
       "claimed_prefix_tokens": 0,
       "computed_prompt_tokens": 0,
       "computed_shared_prefix_tokens": 0,
-      "duration_ms": 9.9149799971201,
-      "end_ms": 1261.3963049989252,
+      "duration_ms": 9.86660899798153,
+      "end_ms": 1311.846949000028,
       "evicted_blocks": [],
       "free_blocks_after_schedule": 1552,
       "initial_persistent_hit_tokens": 0,
@@ -10114,7 +10093,7 @@
         "D3",
         "D4"
       ],
-      "start_ms": 1251.481325001805,
+      "start_ms": 1301.9803400020464,
       "step": 39,
       "used_blocks_after_schedule": 688,
       "waiting_after_schedule": []
@@ -10124,8 +10103,8 @@
       "claimed_prefix_tokens": 0,
       "computed_prompt_tokens": 0,
       "computed_shared_prefix_tokens": 0,
-      "duration_ms": 9.755291997862514,
-      "end_ms": 1271.1606029988616,
+      "duration_ms": 9.914555001159897,
+      "end_ms": 1321.7725430004066,
       "evicted_blocks": [],
       "free_blocks_after_schedule": 1552,
       "initial_persistent_hit_tokens": 0,
@@ -10354,7 +10333,7 @@
         "D3",
         "D4"
       ],
-      "start_ms": 1261.405311000999,
+      "start_ms": 1311.8579879992467,
       "step": 40,
       "used_blocks_after_schedule": 688,
       "waiting_after_schedule": []
@@ -10364,8 +10343,8 @@
       "claimed_prefix_tokens": 0,
       "computed_prompt_tokens": 0,
       "computed_shared_prefix_tokens": 0,
-      "duration_ms": 9.8126940029033,
-      "end_ms": 1280.9823140014487,
+      "duration_ms": 11.098266000772128,
+      "end_ms": 1332.8834240019205,
       "evicted_blocks": [],
       "free_blocks_after_schedule": 1552,
       "initial_persistent_hit_tokens": 0,
@@ -10594,7 +10573,7 @@
         "D3",
         "D4"
       ],
-      "start_ms": 1271.1696199985454,
+      "start_ms": 1321.7851580011484,
       "step": 41,
       "used_blocks_after_schedule": 688,
       "waiting_after_schedule": []
@@ -10604,8 +10583,8 @@
       "claimed_prefix_tokens": 0,
       "computed_prompt_tokens": 0,
       "computed_shared_prefix_tokens": 0,
-      "duration_ms": 9.139108002273133,
-      "end_ms": 1290.130229001079,
+      "duration_ms": 11.441840000770753,
+      "end_ms": 1344.336825000937,
       "evicted_blocks": [],
       "free_blocks_after_schedule": 1552,
       "initial_persistent_hit_tokens": 0,
@@ -10834,7 +10813,7 @@
         "D3",
         "D4"
       ],
-      "start_ms": 1280.9911209988059,
+      "start_ms": 1332.8949850001663,
       "step": 42,
       "used_blocks_after_schedule": 688,
       "waiting_after_schedule": []
@@ -10844,8 +10823,8 @@
       "claimed_prefix_tokens": 0,
       "computed_prompt_tokens": 0,
       "computed_shared_prefix_tokens": 0,
-      "duration_ms": 9.852709001279436,
-      "end_ms": 1299.9921219998214,
+      "duration_ms": 11.266464000073029,
+      "end_ms": 1355.6217870027467,
       "evicted_blocks": [],
       "free_blocks_after_schedule": 1552,
       "initial_persistent_hit_tokens": 0,
@@ -11074,7 +11053,7 @@
         "D3",
         "D4"
       ],
-      "start_ms": 1290.139412998542,
+      "start_ms": 1344.3553230026737,
       "step": 43,
       "used_blocks_after_schedule": 688,
       "waiting_after_schedule": []
@@ -11084,8 +11063,8 @@
       "claimed_prefix_tokens": 0,
       "computed_prompt_tokens": 0,
       "computed_shared_prefix_tokens": 0,
-      "duration_ms": 10.137158002180513,
-      "end_ms": 1310.1390900010301,
+      "duration_ms": 11.37790299981134,
+      "end_ms": 1367.01824100237,
       "evicted_blocks": [],
       "free_blocks_after_schedule": 1552,
       "initial_persistent_hit_tokens": 0,
@@ -11314,7 +11293,7 @@
         "D3",
         "D4"
       ],
-      "start_ms": 1300.0019319988496,
+      "start_ms": 1355.6403380025586,
       "step": 44,
       "used_blocks_after_schedule": 688,
       "waiting_after_schedule": []
@@ -11324,8 +11303,8 @@
       "claimed_prefix_tokens": 0,
       "computed_prompt_tokens": 0,
       "computed_shared_prefix_tokens": 0,
-      "duration_ms": 10.502630000701174,
-      "end_ms": 1320.6514779994905,
+      "duration_ms": 10.930854001344414,
+      "end_ms": 1377.9613860024256,
       "evicted_blocks": [],
       "free_blocks_after_schedule": 1552,
       "initial_persistent_hit_tokens": 0,
@@ -11554,7 +11533,7 @@
         "D3",
         "D4"
       ],
-      "start_ms": 1310.1488479987893,
+      "start_ms": 1367.0305320010812,
       "step": 45,
       "used_blocks_after_schedule": 688,
       "waiting_after_schedule": []
@@ -11564,8 +11543,8 @@
       "claimed_prefix_tokens": 0,
       "computed_prompt_tokens": 0,
       "computed_shared_prefix_tokens": 0,
-      "duration_ms": 9.777827999641886,
-      "end_ms": 1330.4392530008045,
+      "duration_ms": 10.298745997715741,
+      "end_ms": 1388.2715569998254,
       "evicted_blocks": [],
       "free_blocks_after_schedule": 1552,
       "initial_persistent_hit_tokens": 0,
@@ -11794,7 +11773,7 @@
         "D3",
         "D4"
       ],
-      "start_ms": 1320.6614250011626,
+      "start_ms": 1377.9728110021097,
       "step": 46,
       "used_blocks_after_schedule": 688,
       "waiting_after_schedule": []
@@ -11804,8 +11783,8 @@
       "claimed_prefix_tokens": 0,
       "computed_prompt_tokens": 0,
       "computed_shared_prefix_tokens": 0,
-      "duration_ms": 10.236475998681271,
-      "end_ms": 1340.6843800003116,
+      "duration_ms": 9.99877000140259,
+      "end_ms": 1398.2819820012082,
       "evicted_blocks": [],
       "free_blocks_after_schedule": 1552,
       "initial_persistent_hit_tokens": 0,
@@ -12034,7 +12013,7 @@
         "D3",
         "D4"
       ],
-      "start_ms": 1330.4479040016304,
+      "start_ms": 1388.2832119998056,
       "step": 47,
       "used_blocks_after_schedule": 688,
       "waiting_after_schedule": []
@@ -12044,8 +12023,8 @@
       "claimed_prefix_tokens": 0,
       "computed_prompt_tokens": 0,
       "computed_shared_prefix_tokens": 0,
-      "duration_ms": 10.34238899956108,
-      "end_ms": 1351.0392749994935,
+      "duration_ms": 10.933860998193268,
+      "end_ms": 1409.2254620009044,
       "evicted_blocks": [],
       "free_blocks_after_schedule": 1552,
       "initial_persistent_hit_tokens": 0,
@@ -12274,7 +12253,7 @@
         "D3",
         "D4"
       ],
-      "start_ms": 1340.6968859999324,
+      "start_ms": 1398.291601002711,
       "step": 48,
       "used_blocks_after_schedule": 688,
       "waiting_after_schedule": []
@@ -12284,8 +12263,8 @@
       "claimed_prefix_tokens": 0,
       "computed_prompt_tokens": 0,
       "computed_shared_prefix_tokens": 0,
-      "duration_ms": 10.01172799806227,
-      "end_ms": 1361.0657659992285,
+      "duration_ms": 10.173115999350557,
+      "end_ms": 1419.4091790013772,
       "evicted_blocks": [],
       "free_blocks_after_schedule": 1536,
       "initial_persistent_hit_tokens": 0,
@@ -12514,7 +12493,7 @@
         "D3",
         "D4"
       ],
-      "start_ms": 1351.0540380011662,
+      "start_ms": 1409.2360630020266,
       "step": 49,
       "used_blocks_after_schedule": 704,
       "waiting_after_schedule": []
@@ -12524,8 +12503,8 @@
       "claimed_prefix_tokens": 0,
       "computed_prompt_tokens": 0,
       "computed_shared_prefix_tokens": 0,
-      "duration_ms": 10.970179999276297,
-      "end_ms": 1372.0468120009173,
+      "duration_ms": 10.165645002416568,
+      "end_ms": 1429.5835360026103,
       "evicted_blocks": [],
       "free_blocks_after_schedule": 1536,
       "initial_persistent_hit_tokens": 0,
@@ -12754,7 +12733,7 @@
         "D3",
         "D4"
       ],
-      "start_ms": 1361.076632001641,
+      "start_ms": 1419.4178910001938,
       "step": 50,
       "used_blocks_after_schedule": 704,
       "waiting_after_schedule": []
@@ -12764,8 +12743,8 @@
       "claimed_prefix_tokens": 0,
       "computed_prompt_tokens": 0,
       "computed_shared_prefix_tokens": 0,
-      "duration_ms": 9.521988002234139,
-      "end_ms": 1381.579363001947,
+      "duration_ms": 10.171645997615997,
+      "end_ms": 1439.7653539999737,
       "evicted_blocks": [],
       "free_blocks_after_schedule": 1536,
       "initial_persistent_hit_tokens": 0,
@@ -12994,7 +12973,7 @@
         "D3",
         "D4"
       ],
-      "start_ms": 1372.057374999713,
+      "start_ms": 1429.5937080023577,
       "step": 51,
       "used_blocks_after_schedule": 704,
       "waiting_after_schedule": []
@@ -13004,8 +12983,8 @@
       "claimed_prefix_tokens": 0,
       "computed_prompt_tokens": 0,
       "computed_shared_prefix_tokens": 0,
-      "duration_ms": 10.679525999876205,
-      "end_ms": 1392.268324001634,
+      "duration_ms": 10.402705996966688,
+      "end_ms": 1450.17764899967,
       "evicted_blocks": [],
       "free_blocks_after_schedule": 1536,
       "initial_persistent_hit_tokens": 0,
@@ -13234,7 +13213,7 @@
         "D3",
         "D4"
       ],
-      "start_ms": 1381.5887980017578,
+      "start_ms": 1439.7749430027034,
       "step": 52,
       "used_blocks_after_schedule": 704,
       "waiting_after_schedule": []
@@ -13244,8 +13223,8 @@
       "claimed_prefix_tokens": 0,
       "computed_prompt_tokens": 0,
       "computed_shared_prefix_tokens": 0,
-      "duration_ms": 9.456394000153523,
-      "end_ms": 1401.7353849994834,
+      "duration_ms": 10.695822002162458,
+      "end_ms": 1460.8839570028067,
       "evicted_blocks": [],
       "free_blocks_after_schedule": 1536,
       "initial_persistent_hit_tokens": 0,
@@ -13474,7 +13453,7 @@
         "D3",
         "D4"
       ],
-      "start_ms": 1392.2789909993298,
+      "start_ms": 1450.1881350006443,
       "step": 53,
       "used_blocks_after_schedule": 704,
       "waiting_after_schedule": []
@@ -13484,8 +13463,8 @@
       "claimed_prefix_tokens": 0,
       "computed_prompt_tokens": 0,
       "computed_shared_prefix_tokens": 0,
-      "duration_ms": 9.569885998644168,
-      "end_ms": 1411.3136710002436,
+      "duration_ms": 10.104373999638483,
+      "end_ms": 1470.9997040008602,
       "evicted_blocks": [],
       "free_blocks_after_schedule": 1536,
       "initial_persistent_hit_tokens": 0,
@@ -13714,7 +13693,7 @@
         "D3",
         "D4"
       ],
-      "start_ms": 1401.7437850015995,
+      "start_ms": 1460.8953300012217,
       "step": 54,
       "used_blocks_after_schedule": 704,
       "waiting_after_schedule": []
@@ -13724,8 +13703,8 @@
       "claimed_prefix_tokens": 0,
       "computed_prompt_tokens": 0,
       "computed_shared_prefix_tokens": 0,
-      "duration_ms": 9.688597998319892,
-      "end_ms": 1421.0122149997915,
+      "duration_ms": 10.179741999309044,
+      "end_ms": 1481.1906409995572,
       "evicted_blocks": [],
       "free_blocks_after_schedule": 1536,
       "initial_persistent_hit_tokens": 0,
@@ -13954,7 +13933,7 @@
         "D3",
         "D4"
       ],
-      "start_ms": 1411.3236170014716,
+      "start_ms": 1471.0108990002482,
       "step": 55,
       "used_blocks_after_schedule": 704,
       "waiting_after_schedule": []
@@ -13964,8 +13943,8 @@
       "claimed_prefix_tokens": 0,
       "computed_prompt_tokens": 0,
       "computed_shared_prefix_tokens": 0,
-      "duration_ms": 10.015144998760661,
-      "end_ms": 1431.0371809988283,
+      "duration_ms": 12.232215998665197,
+      "end_ms": 1493.434887001058,
       "evicted_blocks": [],
       "free_blocks_after_schedule": 1536,
       "initial_persistent_hit_tokens": 0,
@@ -14194,7 +14173,7 @@
         "D3",
         "D4"
       ],
-      "start_ms": 1421.0220360000676,
+      "start_ms": 1481.202671002393,
       "step": 56,
       "used_blocks_after_schedule": 704,
       "waiting_after_schedule": []
@@ -14204,8 +14183,8 @@
       "claimed_prefix_tokens": 0,
       "computed_prompt_tokens": 0,
       "computed_shared_prefix_tokens": 0,
-      "duration_ms": 10.20166899979813,
-      "end_ms": 1441.2488070011023,
+      "duration_ms": 10.446624000906013,
+      "end_ms": 1503.895794001437,
       "evicted_blocks": [],
       "free_blocks_after_schedule": 1536,
       "initial_persistent_hit_tokens": 0,
@@ -14434,7 +14413,7 @@
         "D3",
         "D4"
       ],
-      "start_ms": 1431.0471380013041,
+      "start_ms": 1493.449170000531,
       "step": 57,
       "used_blocks_after_schedule": 704,
       "waiting_after_schedule": []
@@ -14444,8 +14423,8 @@
       "claimed_prefix_tokens": 0,
       "computed_prompt_tokens": 0,
       "computed_shared_prefix_tokens": 0,
-      "duration_ms": 10.346865001338301,
-      "end_ms": 1451.6063920018496,
+      "duration_ms": 9.727058997668792,
+      "end_ms": 1513.6349759995937,
       "evicted_blocks": [],
       "free_blocks_after_schedule": 1536,
       "initial_persistent_hit_tokens": 0,
@@ -14674,7 +14653,7 @@
         "D3",
         "D4"
       ],
-      "start_ms": 1441.2595270005113,
+      "start_ms": 1503.907917001925,
       "step": 58,
       "used_blocks_after_schedule": 704,
       "waiting_after_schedule": []
@@ -14684,8 +14663,8 @@
       "claimed_prefix_tokens": 0,
       "computed_prompt_tokens": 0,
       "computed_shared_prefix_tokens": 0,
-      "duration_ms": 10.332494999602204,
-      "end_ms": 1461.9525220005016,
+      "duration_ms": 10.402497999166371,
+      "end_ms": 1524.0483870002208,
       "evicted_blocks": [],
       "free_blocks_after_schedule": 1536,
       "initial_persistent_hit_tokens": 0,
@@ -14914,7 +14893,7 @@
         "D3",
         "D4"
       ],
-      "start_ms": 1451.6200270008994,
+      "start_ms": 1513.6458890010545,
       "step": 59,
       "used_blocks_after_schedule": 704,
       "waiting_after_schedule": []
@@ -14924,8 +14903,8 @@
       "claimed_prefix_tokens": 0,
       "computed_prompt_tokens": 0,
       "computed_shared_prefix_tokens": 0,
-      "duration_ms": 9.857631001068512,
-      "end_ms": 1471.8210710016137,
+      "duration_ms": 9.812437998334644,
+      "end_ms": 1533.8719680003123,
       "evicted_blocks": [],
       "free_blocks_after_schedule": 1536,
       "initial_persistent_hit_tokens": 0,
@@ -15154,7 +15133,7 @@
         "D3",
         "D4"
       ],
-      "start_ms": 1461.9634400005452,
+      "start_ms": 1524.0595300019777,
       "step": 60,
       "used_blocks_after_schedule": 704,
       "waiting_after_schedule": []
@@ -15164,8 +15143,8 @@
       "claimed_prefix_tokens": 0,
       "computed_prompt_tokens": 0,
       "computed_shared_prefix_tokens": 0,
-      "duration_ms": 10.73433599958662,
-      "end_ms": 1482.5672859988117,
+      "duration_ms": 10.076729002321372,
+      "end_ms": 1543.9591730028042,
       "evicted_blocks": [],
       "free_blocks_after_schedule": 1536,
       "initial_persistent_hit_tokens": 0,
@@ -15394,7 +15373,7 @@
         "D3",
         "D4"
       ],
-      "start_ms": 1471.832949999225,
+      "start_ms": 1533.8824440004828,
       "step": 61,
       "used_blocks_after_schedule": 704,
       "waiting_after_schedule": []
@@ -15404,8 +15383,8 @@
       "claimed_prefix_tokens": 0,
       "computed_prompt_tokens": 0,
       "computed_shared_prefix_tokens": 0,
-      "duration_ms": 9.566213997459272,
-      "end_ms": 1492.1443759994872,
+      "duration_ms": 11.083920999226393,
+      "end_ms": 1555.0533610003185,
       "evicted_blocks": [],
       "free_blocks_after_schedule": 1536,
       "initial_persistent_hit_tokens": 0,
@@ -15634,7 +15613,7 @@
         "D3",
         "D4"
       ],
-      "start_ms": 1482.578162002028,
+      "start_ms": 1543.9694400010922,
       "step": 62,
       "used_blocks_after_schedule": 704,
       "waiting_after_schedule": []
@@ -15644,8 +15623,8 @@
       "claimed_prefix_tokens": 0,
       "computed_prompt_tokens": 0,
       "computed_shared_prefix_tokens": 0,
-      "duration_ms": 10.792302000481868,
-      "end_ms": 1502.9453499992087,
+      "duration_ms": 10.577709999779472,
+      "end_ms": 1565.641921999486,
       "evicted_blocks": [],
       "free_blocks_after_schedule": 1536,
       "initial_persistent_hit_tokens": 0,
@@ -15891,7 +15870,7 @@
         "D3",
         "D4"
       ],
-      "start_ms": 1492.1530479987268,
+      "start_ms": 1555.0642119997065,
       "step": 63,
       "used_blocks_after_schedule": 704,
       "waiting_after_schedule": []
