@@ -1937,6 +1937,7 @@ def _validate_runtime(
         "tensor_parallel_size": 1,
         "block_size": BLOCK_SIZE,
         "chunked_prefill": True,
+        "same_step_prefix_reuse": True,
     }
     actual = {
         "policy": config.cudagraph_mode,
@@ -1945,6 +1946,7 @@ def _validate_runtime(
         "tensor_parallel_size": config.tensor_parallel_size,
         "block_size": config.kvcache_block_size,
         "chunked_prefill": config.chunked_prefill,
+        "same_step_prefix_reuse": config.enable_same_step_prefix_reuse,
     }
     if actual != expected:
         raise AssertionError(f"runtime contract mismatch: {actual} != {expected}")
@@ -2072,7 +2074,7 @@ def _run(
             kvcache_block_size=BLOCK_SIZE,
             chunked_prefill=True,
             enable_lpm=True,
-            enable_in_batch_prefix_deprioritization=True,
+            enable_same_step_prefix_reuse=True,
             attention_backend="flashinfer",
             attention_mode="unified",
         )
@@ -2189,6 +2191,7 @@ def main(argv: TypingSequence[str] | None = None) -> None:
             "tensor_parallel_size": 1,
             "chunked_prefill": True,
             "prefix_cache": True,
+            "enable_same_step_prefix_reuse": True,
             "cudagraph_mode": args.mode,
             "cudagraph_batch_sizes": list(batch_sizes),
             "batch_sizes": list(batch_sizes),

@@ -5,10 +5,10 @@
     "cuda_graphs": "none",
     "dtype": "bfloat16",
     "ignore_eos": true,
-    "logical_kv_blocks": 640,
+    "logical_kv_blocks": 2240,
     "max_model_len": 2304,
-    "max_num_batched_tokens": 8704,
-    "max_num_seqs": 4,
+    "max_num_batched_tokens": 10240,
+    "max_num_seqs": 16,
     "prefix_caching": true,
     "temperature": 1.0,
     "tensor_parallel_size": 1
@@ -35054,13 +35054,22 @@
       "submission": "simultaneous_batch"
     }
   ],
-  "schema_version": 1,
+  "schema_version": 2,
   "seed": 2026,
   "trace_kind": "eager_only_cross_framework",
   "workload": "in_batch_prefix_burst",
   "workload_contract": {
+    "arrival_layout": "grouped_by_prefix",
+    "cold_worst_case_blocks": 2240,
+    "comparison_logical_kv_blocks": 2240,
+    "expected_off_first_step_admissions": 4,
+    "expected_on_first_step_admissions": 16,
+    "output_len": 64,
     "prefix_groups": 4,
-    "shared_prefix_len": 2048
+    "requests_per_group": 4,
+    "same_step_minimum_blocks": 704,
+    "shared_prefix_len": 2048,
+    "unique_suffix_len": 128
   },
   "workload_key": "in-batch"
 }

@@ -2,23 +2,39 @@
   "backend_specific_metrics": {
     "cross_framework_comparable": false,
     "nano_vllm": {
-      "actually_computed_prompt_tokens": 11359,
       "cached_block_eviction_count": 704,
+      "claimed_prefix_tokens": 49152,
+      "computed_prompt_tokens": 11359,
       "computed_shared_prefix_tokens": 0,
-      "definition": "nano-vllm SchedulerMetrics; not compared to vLLM backend-native cache counters",
+      "definition": "nano-vllm SchedulerMetrics with disjoint initial persistent and same-step hit accounting; not compared to vLLM backend-native cache counters",
       "duplicate_prefill_tokens": 0,
+      "first_step_prefill_admission_count": 4,
+      "initial_persistent_hit_tokens": 49152,
+      "initial_persistent_hit_tokens_after_first_step": 32768,
+      "max_step_prefill_admission_count": 4,
       "output_token_count": 1536,
-      "output_token_throughput_tps": 221.18781401756777,
-      "p95_ttft_ms": 5993.796723999822,
-      "persistent_cache_hit_tokens": 49152,
-      "persistent_hit_tokens_after_first_step": 32768,
+      "output_token_throughput_tps": 301.9857942339197,
+      "p95_ttft_ms": 4345.851019999827,
       "preemption_count": 0,
+      "prompt_token_conservation": {
+        "accounted_prompt_tokens": 60511,
+        "balanced": true,
+        "computed_prompt_tokens": 11359,
+        "delta_tokens": 0,
+        "initial_persistent_hit_tokens": 49152,
+        "same_step_hit_tokens": 0,
+        "total_prompt_tokens": 60511
+      },
       "request_count": 24,
-      "request_throughput_rps": 3.4560595940244965,
+      "request_throughput_rps": 4.718528034904995,
+      "same_step_hit_tokens": 0,
+      "same_step_hit_tokens_after_first_step": 0,
+      "same_step_reused_blocks": 0,
+      "same_step_reused_request_count": 0,
+      "same_step_reused_seq_ids": [],
       "scheduler_step_count": 384,
-      "temporary_deprioritized_request_count": 0,
-      "temporary_deprioritized_seq_ids": [],
-      "total_batch_completion_s": 6.944324698999935
+      "total_batch_completion_s": 5.086331971000618,
+      "total_prompt_tokens": 60511
     },
     "vllm": {
       "definition": "vLLM RequestOutput.num_cached_tokens and a derived prompt-minus-cache count; not definition-equivalent to nano-vllm SchedulerMetrics",
@@ -30,29 +46,29 @@
     {
       "lower_is_better": true,
       "metric": "p95_ttft_ms",
-      "nano_over_vllm_ratio": 1.3241086858897244,
-      "nano_relative_delta_percent": 32.410868588972455,
-      "nano_vllm": 5993.796723999822,
+      "nano_over_vllm_ratio": 1.1904434206584236,
+      "nano_relative_delta_percent": 19.044342065842358,
+      "nano_vllm": 4345.851019999827,
       "unit": "ms",
-      "vllm": 4526.665210999909
+      "vllm": 3650.6153459995403
     },
     {
       "lower_is_better": false,
       "metric": "request_throughput_rps",
-      "nano_over_vllm_ratio": 0.7783834188770686,
-      "nano_relative_delta_percent": -22.161658112293132,
-      "nano_vllm": 3.4560595940244965,
+      "nano_over_vllm_ratio": 0.8316472821899404,
+      "nano_relative_delta_percent": -16.835271781005954,
+      "nano_vllm": 4.718528034904995,
       "unit": "requests/s",
-      "vllm": 4.440047809613372
+      "vllm": 5.673713046328849
     },
     {
       "lower_is_better": true,
       "metric": "total_batch_completion_s",
-      "nano_over_vllm_ratio": 1.2847139028766126,
-      "nano_relative_delta_percent": 28.471390287661247,
-      "nano_vllm": 6.944324698999935,
+      "nano_over_vllm_ratio": 1.2024328359094056,
+      "nano_relative_delta_percent": 20.243283590940568,
+      "nano_vllm": 5.086331971000618,
       "unit": "s",
-      "vllm": 5.4053472010000405
+      "vllm": 4.230034159998468
     }
   ],
   "comparison_kind": "eager_only_cross_framework",
@@ -83,7 +99,7 @@
     "vllm_result": "/workspace/aiinfra/nano-vllm-v1/benchmark_results/eager_compare/lpm.vllm.json"
   },
   "interpretation_boundary": "Compare Cache-Aware Scheduler behavior with vLLM's default eager scheduler only for this shared-prefix target workload.  Do not generalize these numbers to all workloads or attribute them to CUDA Graph.",
-  "schema_version": 1,
+  "schema_version": 2,
   "trace": {
     "path": "/workspace/aiinfra/nano-vllm-v1/benchmark_results/eager_compare/lpm.trace.json",
     "request_manifest": [
@@ -386,7 +402,7 @@
       }
     ],
     "request_manifest_sha256": "bd4ae18070ec2fd8961642aa50b539941068a8f2ab7d8abc8f7345100dd1906b",
-    "sha256": "5ca261fe6303284021acea7883f71cad3e288dc764e13452ab807d201bc44188"
+    "sha256": "a3f29bf406cd8cbeff837712e92ba9e66fd1522f2bf4d525d44c2a8fd42e1a53"
   },
   "workload": "shared_long_prefix_kv_pressure"
 }

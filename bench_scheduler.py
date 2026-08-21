@@ -68,7 +68,8 @@ class RequestObservation:
     submitted_at: float = 0.0
     first_token_at: float | None = None
     completed_at: float | None = None
-    persistent_hit_tokens: int = 0
+    initial_persistent_hit_tokens: int = 0
+    same_step_hit_tokens: int = 0
     computed_prompt_tokens: int = 0
     computed_shared_prefix_tokens: int = 0
 
@@ -203,12 +204,15 @@ class SchedulerMetrics:
         self.observations = observations
         self.phase_started_at = phase_started_at
         self.steps: list[dict[str, Any]] = []
-        self.persistent_hit_tokens = 0
+        self.initial_persistent_hit_tokens = 0
+        self.same_step_hit_tokens = 0
+        self.claimed_prefix_tokens = 0
         self.computed_prompt_tokens = 0
         self.computed_shared_prefix_tokens = 0
         self.cached_block_evictions = 0
         self.preemptions = 0
-        self.temporary_deprioritized_ids: set[int] = set()
+        self.same_step_reused_ids: set[int] = set()
+        self.same_step_reused_blocks = 0
         self._claim_depth = 0
         self._active_step: dict[str, Any] | None = None
         self._pending_step: dict[str, Any] | None = None
@@ -237,21 +241,25 @@ class SchedulerMetrics:
                 result = collector._original_claim_prefix(seq, block_ids)
             finally:
                 collector._claim_depth -= 1
-            hit_tokens = len(block_ids) * manager.block_size
-            collector.persistent_hit_tokens += hit_tokens
-            observation = collector.observations.get(seq.seq_id)
-            if observation is not None:
-                observation.persistent_hit_tokens += hit_tokens
+            hit_blocks = len(block_ids)
+            hit_tokens = hit_blocks * manager.block_size
+            collector.claimed_prefix_tokens += hit_tokens
             if collector._active_step is not None and hit_tokens:
-                collector._active_step["persistent_claims"].append(
+                collector._active_step["prefix_claims"].append(
                     {
                         "seq_id": seq.seq_id,
                         "name": collector._request_name(seq.seq_id),
-                        "block_count": len(block_ids),
+                        "block_count": hit_blocks,
                         "hit_tokens": hit_tokens,
                     }
                 )
-                collector._active_step["persistent_hit_tokens"] += hit_tokens
+                claimed_by_seq = collector._active_step[
+                    "_claimed_prefix_blocks_by_seq"
+                ]
+                claimed_by_seq[seq.seq_id] = (
+                    claimed_by_seq.get(seq.seq_id, 0) + hit_blocks
+                )
+                collector._active_step["claimed_prefix_tokens"] += hit_tokens
             return result
 
         def allocate_block_hook(
@@ -294,8 +302,11 @@ class SchedulerMetrics:
             step = {
                 "step": len(collector.steps),
                 "start_ms": (perf_counter() - collector.phase_started_at) * 1e3,
-                "persistent_hit_tokens": 0,
-                "persistent_claims": [],
+                "initial_persistent_hit_tokens": 0,
+                "same_step_hit_tokens": 0,
+                "claimed_prefix_tokens": 0,
+                "prefix_claims": [],
+                "_claimed_prefix_blocks_by_seq": {},
                 "cached_block_evictions": 0,
                 "evicted_blocks": [],
                 "preemptions": [],
@@ -306,6 +317,66 @@ class SchedulerMetrics:
             except BaseException:
                 collector._active_step = None
                 raise
+
+            initial_blocks_by_seq = dict(
+                scheduler.initial_persistent_hit_blocks_by_seq
+            )
+            same_step_blocks_by_seq = dict(
+                scheduler.same_step_hit_blocks_by_seq
+            )
+            claimed_blocks_by_seq = step.pop(
+                "_claimed_prefix_blocks_by_seq"
+            )
+            classified_seq_ids = (
+                set(initial_blocks_by_seq) | set(same_step_blocks_by_seq)
+            )
+            if classified_seq_ids != set(claimed_blocks_by_seq):
+                raise AssertionError(
+                    "scheduler prefix-hit classification differs from claims: "
+                    f"classified={sorted(classified_seq_ids)}, "
+                    f"claimed={sorted(claimed_blocks_by_seq)}"
+                )
+            for seq_id, claimed_blocks in claimed_blocks_by_seq.items():
+                initial_blocks = initial_blocks_by_seq.get(seq_id, 0)
+                same_step_blocks = same_step_blocks_by_seq.get(seq_id, 0)
+                if initial_blocks + same_step_blocks != claimed_blocks:
+                    raise AssertionError(
+                        "initial + same-step prefix blocks must equal claimed "
+                        f"blocks for seq {seq_id}: {initial_blocks} + "
+                        f"{same_step_blocks} != {claimed_blocks}"
+                    )
+
+            block_size = collector.block_manager.block_size
+            step_initial_tokens = sum(initial_blocks_by_seq.values()) * block_size
+            step_same_step_tokens = (
+                sum(same_step_blocks_by_seq.values()) * block_size
+            )
+            if (
+                step_initial_tokens + step_same_step_tokens
+                != step["claimed_prefix_tokens"]
+            ):
+                raise AssertionError(
+                    "initial + same-step hit tokens must equal claimed prefix tokens"
+                )
+            collector.initial_persistent_hit_tokens += step_initial_tokens
+            collector.same_step_hit_tokens += step_same_step_tokens
+            collector.same_step_reused_blocks += sum(
+                same_step_blocks_by_seq.values()
+            )
+            collector.same_step_reused_ids.update(same_step_blocks_by_seq)
+            step["initial_persistent_hit_tokens"] = step_initial_tokens
+            step["same_step_hit_tokens"] = step_same_step_tokens
+
+            for seq_id in classified_seq_ids:
+                observation = collector.observations.get(seq_id)
+                if observation is None:
+                    continue
+                observation.initial_persistent_hit_tokens += (
+                    initial_blocks_by_seq.get(seq_id, 0) * block_size
+                )
+                observation.same_step_hit_tokens += (
+                    same_step_blocks_by_seq.get(seq_id, 0) * block_size
+                )
 
             scheduled_rows = []
             step_computed_prompt_tokens = 0
@@ -338,14 +409,23 @@ class SchedulerMetrics:
                         "name": collector._request_name(seq.seq_id),
                         "status": seq.status.name,
                         "cached_tokens_before_forward": seq.num_cached_tokens,
+                        "initial_persistent_hit_tokens": (
+                            initial_blocks_by_seq.get(seq.seq_id, 0) * block_size
+                        ),
+                        "same_step_hit_tokens": (
+                            same_step_blocks_by_seq.get(seq.seq_id, 0) * block_size
+                        ),
                         "new_tokens": seq.num_new_tokens,
                         "computed_prompt_tokens": computed_prompt,
                         "computed_shared_prefix_tokens": shared_computed,
                     }
                 )
 
-            temporary_ids = sorted(scheduler.temporary_deprioritized)
-            collector.temporary_deprioritized_ids.update(temporary_ids)
+            same_step_ids = [
+                seq.seq_id
+                for seq in scheduled
+                if same_step_blocks_by_seq.get(seq.seq_id, 0) > 0
+            ]
             step.update(
                 {
                     "scheduled": scheduled_rows,
@@ -358,14 +438,15 @@ class SchedulerMetrics:
                     ),
                     "computed_prompt_tokens": step_computed_prompt_tokens,
                     "computed_shared_prefix_tokens": step_computed_shared_tokens,
-                    "temporary_deprioritized_seq_ids": temporary_ids,
-                    "temporary_deprioritized_names": [
-                        collector._request_name(seq_id)
-                        for seq_id in temporary_ids
-                    ],
-                    "temporary_prefix_index_size": len(
-                        scheduler.temporary_prefix_index
+                    "same_step_reused_blocks": sum(
+                        same_step_blocks_by_seq.values()
                     ),
+                    "same_step_reused_request_count": len(same_step_ids),
+                    "same_step_reused_seq_ids": same_step_ids,
+                    "same_step_reused_names": [
+                        collector._request_name(seq_id)
+                        for seq_id in same_step_ids
+                    ],
                     "waiting_after_schedule": [
                         collector._request_name(seq.seq_id)
                         for seq in scheduler.waiting
@@ -600,7 +681,10 @@ def _request_rows(
                 "completion_ms": (
                     observation.completed_at - observation.submitted_at
                 ) * 1e3,
-                "persistent_hit_tokens": observation.persistent_hit_tokens,
+                "initial_persistent_hit_tokens": (
+                    observation.initial_persistent_hit_tokens
+                ),
+                "same_step_hit_tokens": observation.same_step_hit_tokens,
                 "computed_prompt_tokens": observation.computed_prompt_tokens,
                 "computed_shared_prefix_tokens": (
                     observation.computed_shared_prefix_tokens
@@ -622,29 +706,86 @@ def _metric_summary(
     elapsed_s = phase_ended_at - phase_started_at
     ttfts = [row["ttft_ms"] for row in request_rows]
     total_output_tokens = sum(row["output_tokens"] for row in request_rows)
+    total_prompt_tokens = sum(row["prompt_tokens"] for row in request_rows)
+    classified_hit_tokens = (
+        collector.initial_persistent_hit_tokens
+        + collector.same_step_hit_tokens
+    )
+    if classified_hit_tokens != collector.claimed_prefix_tokens:
+        raise AssertionError(
+            "initial persistent + same-step hits must equal claimed prefix "
+            f"tokens: {collector.initial_persistent_hit_tokens} + "
+            f"{collector.same_step_hit_tokens} != "
+            f"{collector.claimed_prefix_tokens}"
+        )
+    accounted_prompt_tokens = (
+        classified_hit_tokens + collector.computed_prompt_tokens
+    )
+    if accounted_prompt_tokens != total_prompt_tokens:
+        raise AssertionError(
+            "prompt-token conservation failed: initial persistent "
+            f"{collector.initial_persistent_hit_tokens} + same-step "
+            f"{collector.same_step_hit_tokens} + computed "
+            f"{collector.computed_prompt_tokens} != total "
+            f"{total_prompt_tokens}"
+        )
     duplicate_prefill_tokens = max(
         collector.computed_shared_prefix_tokens
         - prefix_groups * shared_prefix_len,
         0,
     )
+    first_step_admissions = (
+        collector.steps[0]["num_scheduled_prefill_seqs"]
+        if collector.steps
+        else 0
+    )
     return {
-        "persistent_cache_hit_tokens": collector.persistent_hit_tokens,
-        "persistent_hit_tokens_after_first_step": sum(
-            step["persistent_hit_tokens"] for step in collector.steps[1:]
+        "initial_persistent_hit_tokens": (
+            collector.initial_persistent_hit_tokens
         ),
-        "actually_computed_prompt_tokens": collector.computed_prompt_tokens,
+        "initial_persistent_hit_tokens_after_first_step": sum(
+            step["initial_persistent_hit_tokens"]
+            for step in collector.steps[1:]
+        ),
+        "same_step_hit_tokens": collector.same_step_hit_tokens,
+        "same_step_hit_tokens_after_first_step": sum(
+            step["same_step_hit_tokens"] for step in collector.steps[1:]
+        ),
+        "claimed_prefix_tokens": collector.claimed_prefix_tokens,
+        "computed_prompt_tokens": collector.computed_prompt_tokens,
+        "total_prompt_tokens": total_prompt_tokens,
+        "prompt_token_conservation": {
+            "initial_persistent_hit_tokens": (
+                collector.initial_persistent_hit_tokens
+            ),
+            "same_step_hit_tokens": collector.same_step_hit_tokens,
+            "computed_prompt_tokens": collector.computed_prompt_tokens,
+            "accounted_prompt_tokens": accounted_prompt_tokens,
+            "total_prompt_tokens": total_prompt_tokens,
+            "delta_tokens": accounted_prompt_tokens - total_prompt_tokens,
+            "balanced": True,
+        },
         "computed_shared_prefix_tokens": (
             collector.computed_shared_prefix_tokens
         ),
         "duplicate_prefill_tokens": duplicate_prefill_tokens,
+        "same_step_reused_request_count": len(
+            collector.same_step_reused_ids
+        ),
+        "same_step_reused_seq_ids": sorted(
+            collector.same_step_reused_ids
+        ),
+        "same_step_reused_blocks": collector.same_step_reused_blocks,
+        "first_step_prefill_admission_count": first_step_admissions,
+        "max_step_prefill_admission_count": max(
+            (
+                step["num_scheduled_prefill_seqs"]
+                for step in collector.steps
+            ),
+            default=0,
+        ),
         "cached_block_eviction_count": collector.cached_block_evictions,
         "preemption_count": collector.preemptions,
-        "temporary_deprioritized_request_count": len(
-            collector.temporary_deprioritized_ids
-        ),
-        "temporary_deprioritized_seq_ids": sorted(
-            collector.temporary_deprioritized_ids
-        ),
         "p95_ttft_ms": _percentile(ttfts, 95.0),
         "total_batch_completion_s": elapsed_s,
         "request_throughput_rps": len(observations) / elapsed_s,
@@ -797,9 +938,13 @@ def _benchmark_lpm(
     first_names = collector.steps[0]["scheduled_names"]
     assertions = {
         "all_phase1_prefixes_resident": min(phase1_cache_hits.values()) >= 4096,
-        "temporary_deprioritization_disabled": (
-            metrics["temporary_deprioritized_request_count"] == 0
+        "same_step_prefix_reuse_enabled": (
+            llm.scheduler.enable_same_step_prefix_reuse is True
         ),
+        "prompt_tokens_conserved": (
+            metrics["prompt_token_conservation"]["balanced"] is True
+        ),
+        "no_preemption": metrics["preemption_count"] == 0,
         "cold_requests_triggered_cached_eviction": (
             metrics["cached_block_eviction_count"] > 0
         ),
@@ -811,7 +956,8 @@ def _benchmark_lpm(
     else:
         assertions["first_batch_prioritizes_resident_prefixes"] = (
             first_names == ["A1", "B1", "C1", "A2"]
-            and collector.steps[0]["persistent_hit_tokens"] >= 4 * 4096
+            and collector.steps[0]["initial_persistent_hit_tokens"]
+            >= 4 * 4096
         )
     if not all(assertions.values()):
         raise AssertionError(f"LPM causal assertion failed: {assertions}")
@@ -845,13 +991,38 @@ def _benchmark_in_batch(
     args: argparse.Namespace,
     factory: TokenFactory,
 ) -> dict[str, Any]:
-    minimum_logical_blocks = 4 * (
-        (2048 + 128 + 64) // BLOCK_SIZE
+    shared_prefix_len = 2048
+    unique_suffix_len = 128
+    output_len = 64
+    prefix_groups = 4
+    requests_per_group = 4
+    request_count = prefix_groups * requests_per_group
+    shared_blocks = prefix_groups * (shared_prefix_len // BLOCK_SIZE)
+    per_request_tail_blocks = (
+        unique_suffix_len + output_len
+    ) // BLOCK_SIZE
+    same_step_minimum_blocks = (
+        shared_blocks + request_count * per_request_tail_blocks
     )
-    if args.logical_kv_blocks < minimum_logical_blocks:
+    cold_worst_case_blocks = request_count * (
+        (shared_prefix_len + unique_suffix_len + output_len)
+        // BLOCK_SIZE
+    )
+    if same_step_minimum_blocks != 704:
+        raise AssertionError(
+            "in-batch shared-layout KV formula drifted: "
+            f"expected 704, got {same_step_minimum_blocks}"
+        )
+    if cold_worst_case_blocks != 2240:
+        raise AssertionError(
+            "in-batch cold-layout KV formula drifted: "
+            f"expected 2240, got {cold_worst_case_blocks}"
+        )
+    if args.logical_kv_blocks < cold_worst_case_blocks:
         raise ValueError(
-            "in-batch workload needs at least "
-            f"{minimum_logical_blocks} logical blocks for four active requests"
+            "in-batch OFF/ON comparison needs at least "
+            f"{cold_worst_case_blocks} logical blocks so sixteen cold "
+            "prompts plus decode tails cannot trigger preemption"
         )
     specs = _build_in_batch_workload(factory)
     observations: dict[int, RequestObservation] = {}
@@ -879,42 +1050,104 @@ def _benchmark_in_batch(
         collector,
         phase_started_at,
         phase_ended_at,
-        prefix_groups=4,
-        shared_prefix_len=2048,
+        prefix_groups=prefix_groups,
+        shared_prefix_len=shared_prefix_len,
     )
     first_step = collector.steps[0]
     first_names = first_step["scheduled_names"]
+    expected_grouped_order = [
+        f"{group}{index}"
+        for group in GROUP_NAMES
+        for index in range(1, requests_per_group + 1)
+    ]
+    expected_same_step_names = {
+        f"{group}{index}"
+        for group in GROUP_NAMES
+        for index in range(2, requests_per_group + 1)
+    }
+    expected_same_step_tokens = (
+        prefix_groups
+        * (requests_per_group - 1)
+        * shared_prefix_len
+    )
+    expected_same_step_blocks = expected_same_step_tokens // BLOCK_SIZE
+    total_prompt_tokens = request_count * (
+        shared_prefix_len + unique_suffix_len
+    )
+    expected_on_computed_tokens = (
+        prefix_groups * (shared_prefix_len + unique_suffix_len)
+        + prefix_groups
+        * (requests_per_group - 1)
+        * unique_suffix_len
+    )
+
     assertions: dict[str, bool]
+    common_assertions = {
+        "grouped_arrival_order_preserved": [
+            spec.name for spec in specs
+        ] == expected_grouped_order,
+        "no_initial_persistent_hits": (
+            metrics["initial_persistent_hit_tokens"] == 0
+        ),
+        "prompt_tokens_conserved": (
+            metrics["prompt_token_conservation"]["balanced"] is True
+            and metrics["total_prompt_tokens"] == total_prompt_tokens
+        ),
+        "no_preemption": metrics["preemption_count"] == 0,
+    }
     if args.mode == "off":
         assertions = {
-            "first_batch_repeats_group_a": first_names
+            **common_assertions,
+            "first_batch_is_group_a": first_names
             == ["A1", "A2", "A3", "A4"],
-            "no_temporary_deprioritization": (
-                metrics["temporary_deprioritized_request_count"] == 0
+            "first_step_admits_four_requests": (
+                metrics["first_step_prefill_admission_count"] == 4
+            ),
+            "same_step_reuse_disabled": (
+                llm.scheduler.enable_same_step_prefix_reuse is False
+            ),
+            "no_same_step_hits": metrics["same_step_hit_tokens"] == 0,
+            "no_same_step_reused_requests": (
+                metrics["same_step_reused_request_count"] == 0
+            ),
+            "all_prompts_computed": (
+                metrics["computed_prompt_tokens"] == total_prompt_tokens
             ),
             "duplicate_shared_prefill_observed": (
-                metrics["duplicate_prefill_tokens"] == 4 * 3 * 2048
-            ),
-            "no_later_persistent_hits": (
-                metrics["persistent_hit_tokens_after_first_step"] == 0
+                metrics["duplicate_prefill_tokens"]
+                == expected_same_step_tokens
             ),
         }
     else:
-        expected_followers = {
-            f"{group}{index}"
-            for group in GROUP_NAMES
-            for index in range(2, 5)
-        }
-        first_temporary = set(first_step["temporary_deprioritized_names"])
         assertions = {
-            "first_batch_has_one_leader_per_group": first_names
-            == ["A1", "B1", "C1", "D1"],
-            "first_detection_marks_all_followers": (
-                first_temporary == expected_followers
+            **common_assertions,
+            "first_batch_contains_all_requests_in_fixed_order": (
+                first_names == expected_grouped_order
             ),
-            "followers_hit_persistent_prefix_later": (
-                metrics["persistent_hit_tokens_after_first_step"]
-                >= 12 * 2048
+            "first_step_admits_all_sixteen_requests": (
+                metrics["first_step_prefill_admission_count"]
+                == request_count
+            ),
+            "same_step_reuse_enabled": (
+                llm.scheduler.enable_same_step_prefix_reuse is True
+            ),
+            "all_followers_reuse_same_step_prefix": (
+                set(first_step["same_step_reused_names"])
+                == expected_same_step_names
+                and metrics["same_step_reused_request_count"]
+                == len(expected_same_step_names)
+            ),
+            "same_step_hit_tokens_exact": (
+                metrics["same_step_hit_tokens"]
+                == expected_same_step_tokens
+            ),
+            "same_step_reused_blocks_exact": (
+                metrics["same_step_reused_blocks"]
+                == expected_same_step_blocks
+            ),
+            "prompt_compute_reduced_to_one_prefix_per_group": (
+                metrics["computed_prompt_tokens"]
+                == expected_on_computed_tokens
             ),
             "no_duplicate_shared_prefill": (
                 metrics["duplicate_prefill_tokens"] == 0
@@ -929,12 +1162,25 @@ def _benchmark_in_batch(
         "benchmark": "in_batch_prefix_burst",
         "variant": args.mode,
         "workload": {
-            "shared_prefix_len": 2048,
-            "unique_suffix_len": 128,
-            "output_len": 64,
-            "prefix_groups": 4,
-            "requests_per_group": 4,
+            "shared_prefix_len": shared_prefix_len,
+            "unique_suffix_len": unique_suffix_len,
+            "output_len": output_len,
+            "prefix_groups": prefix_groups,
+            "requests_per_group": requests_per_group,
             "arrival_order": [spec.name for spec in specs],
+            "capacity_formula": {
+                "shared_prefix_blocks": shared_blocks,
+                "per_request_suffix_and_decode_blocks": (
+                    per_request_tail_blocks
+                ),
+                "same_step_minimum_blocks": same_step_minimum_blocks,
+                "cold_worst_case_blocks": cold_worst_case_blocks,
+                "comparison_logical_kv_blocks": args.logical_kv_blocks,
+            },
+            "expected_off_first_step_admissions": 4,
+            "expected_on_first_step_admissions": request_count,
+            "expected_same_step_hit_tokens": expected_same_step_tokens,
+            "expected_on_computed_prompt_tokens": expected_on_computed_tokens,
         },
         "causal_assertions": assertions,
         "metrics": metrics,
@@ -989,7 +1235,7 @@ def _parse_args(argv: TypingSequence[str] | None = None) -> argparse.Namespace:
         help="simultaneous shared-prefix burst",
     )
     in_batch.add_argument("--mode", choices=("off", "on"), required=True)
-    in_batch.add_argument("--logical-kv-blocks", type=int, default=640)
+    in_batch.add_argument("--logical-kv-blocks", type=int, default=2240)
     _add_common_arguments(in_batch)
     return parser.parse_args(argv)
 
@@ -1004,7 +1250,7 @@ def _run(args: argparse.Namespace) -> dict[str, Any]:
     if not 0.0 < args.gpu_memory_utilization <= 1.0:
         raise ValueError("--gpu-memory-utilization must be in (0, 1]")
     minimum_logical_blocks = (
-        816 if args.experiment == "lpm" else 560
+        816 if args.experiment == "lpm" else 2240
     )
     if args.logical_kv_blocks < minimum_logical_blocks:
         raise ValueError(
@@ -1021,13 +1267,15 @@ def _run(args: argparse.Namespace) -> dict[str, Any]:
     if args.experiment == "lpm":
         max_model_len = 4352
         max_num_batched_tokens = 16384
+        max_num_seqs = 4
         enable_lpm = args.mode == "lpm"
-        enable_temporary = False
+        enable_same_step_reuse = True
     else:
         max_model_len = 2304
-        max_num_batched_tokens = 4 * (2048 + 128)
+        max_num_batched_tokens = 10240
+        max_num_seqs = 16
         enable_lpm = True
-        enable_temporary = args.mode == "on"
+        enable_same_step_reuse = args.mode == "on"
 
     llm: LLM | None = None
     try:
@@ -1035,14 +1283,14 @@ def _run(args: argparse.Namespace) -> dict[str, Any]:
             args.model,
             max_model_len=max_model_len,
             max_num_batched_tokens=max_num_batched_tokens,
-            max_num_seqs=4,
+            max_num_seqs=max_num_seqs,
             gpu_memory_utilization=args.gpu_memory_utilization,
             tensor_parallel_size=1,
             enforce_eager=args.enforce_eager,
             kvcache_block_size=BLOCK_SIZE,
             chunked_prefill=False,
             enable_lpm=enable_lpm,
-            enable_in_batch_prefix_deprioritization=enable_temporary,
+            enable_same_step_prefix_reuse=enable_same_step_reuse,
             attention_backend="flashinfer",
             attention_mode=args.attention_mode,
         )
@@ -1070,7 +1318,7 @@ def _run(args: argparse.Namespace) -> dict[str, Any]:
             payload = _benchmark_lpm(llm, args, factory)
         else:
             payload = _benchmark_in_batch(llm, args, factory)
-        payload["schema_version"] = 1
+        payload["schema_version"] = 2
         payload["metadata"] = metadata
         payload["config"] = {
             "seed": args.seed,
@@ -1079,10 +1327,10 @@ def _run(args: argparse.Namespace) -> dict[str, Any]:
             "physical_kv_blocks": physical_blocks,
             "max_model_len": max_model_len,
             "max_num_batched_tokens": max_num_batched_tokens,
-            "max_num_seqs": 4,
+            "max_num_seqs": max_num_seqs,
             "gpu_memory_utilization": args.gpu_memory_utilization,
             "enable_lpm": enable_lpm,
-            "enable_in_batch_prefix_deprioritization": enable_temporary,
+            "enable_same_step_prefix_reuse": enable_same_step_reuse,
             "chunked_prefill": False,
             "attention_backend": "flashinfer",
             "attention_mode": args.attention_mode,

@@ -245,46 +245,96 @@ The scheduler owns three request states:
   token per step.
 
 Each scheduling step preserves decode capacity first, then follows this
-planning/commit pipeline:
+ranking/commit pipeline:
 
 ```text
-match -> rank -> admit -> protect -> allocate
+Waiting snapshot
+    -> initial persistent match
+    -> stable LPM rank (order fixed)
+    -> per-request latest match -> capacity check -> claim -> allocate/publish
 ```
 
-1. **Match.** `BlockManager.match_prefix` walks full prompt blocks through a
-   chained xxHash64 index. It validates both hash and token content and can
-   match blocks that are currently used or cached-free.
-2. **Rank.** Temporary-prefix detection first scans the original FCFS waiting
-   order. With the SGLang-compatible defaults, requests with at most 32 real
-   cached tokens are checked, and a 32-token temporary match marks later
-   requests as followers. Ordinary requests are then sorted by longest real
-   persistent match. All followers share one lower priority, so their internal
-   order remains FCFS. `enable_lpm=False` disables both LPM and temporary
-   deprioritization; `enable_in_batch_prefix_deprioritization=False` keeps LPM
-   while disabling only the temporary policy.
-3. **Admit.** The scheduler jointly checks sequence slots, remaining token
-   budget, decode reservations, and required KV blocks. Only persistent cache
-   matches reduce token or KV budgets. Without chunked prefill, the uncached
-   suffix after persistent matching must fit the configured batch budget or
-   scheduling raises an actionable error; with chunking enabled, one prompt
-   may consume a partial chunk and becomes `chunked_req`.
-4. **Protect.** All persistent matched cached-free blocks for admitted
-   requests are claimed before any allocation. This prevents a later
-   allocation from resetting a block selected during the read-only planning
-   pass.
-5. **Allocate.** Every admitted request allocates its own uncached suffix.
-   A follower admitted in the leader's step remains a cold prefill: temporary
-   matches never affect cached-token counts, block tables, claims, or attention
-   metadata. With limited budget it normally waits, then reuses the leader's
-   committed full blocks through the ordinary persistent index on a later
-   step. Partial blocks remain unpublished until a later append completes
-   them.
+1. **Initial match.** `BlockManager.match_prefix` walks full prompt blocks
+   through the persistent chained-xxHash64 index. It validates the candidate
+   hash, exact token contents, block state, and reference count, and can match
+   blocks that are currently used or cached-free. This read-only pass records
+   the cache state visible at the beginning of the step.
+2. **Stable LPM rank.** With `enable_lpm=True` (the default), requests are
+   sorted by descending initial persistent-match length. Python's stable sort
+   preserves FCFS order for equal matches. The resulting order is fixed before
+   any request is committed. A cache hit acquired later in the same step cannot
+   re-sort the request or move it ahead of an earlier-ranked request.
+3. **Sequential commit.** With `enable_same_step_prefix_reuse=True` (the
+   default), each ranked request performs a fresh lookup against the latest
+   persistent index, checks token/sequence/KV capacity without mutation, claims
+   the complete matched prefix, and allocates its uncached suffix. Every newly
+   formed full block is published immediately, so the next ranked request can
+   match it in the same scheduler step. No destructive BlockManager operation
+   occurs between one request's latest lookup and claim.
+4. **Capacity and strict priority.** Admission capacity is the number of
+   matched cached-free blocks that claim will remove from the free queue plus
+   the number of new physical blocks required by the uncached suffix. Blocks
+   reserved for running Decode and the selected `chunked_req` remain excluded.
+   If the current request cannot fit, the scheduler stops rather than bypassing
+   it for a lower-ranked request. Without chunked prefill, an uncached prompt
+   larger than the batch token limit raises an actionable error; with chunking,
+   at most one partial prompt remains `chunked_req`.
+5. **Frozen OFF baseline.** `enable_same_step_prefix_reuse=False` retains the
+   former frozen-plan admission behavior for ablation: only initial persistent
+   matches determine cached tokens and resource needs, all admitted cached-free
+   prefixes are protected before allocation, and blocks published in this step
+   become visible to Waiting requests only on a later step. Persistent prefix
+   caching and LPM remain enabled unless independently disabled.
+
+`enable_lpm=False` restores stable FCFS ranking but does not disable Same-step
+Prefix Reuse. Conversely, disabling Same-step Prefix Reuse does not disable
+LPM. The removed Temporary Deprioritization index and follower soft-priority
+policy are not part of the default admission path.
+
+Each `Sequence` caches one chained hash per complete token block. Prompt hashes
+are built at construction, and `append_token` adds a hash only when it completes
+a new full block. Lookup, claim validation, and publication reuse these values,
+but a hash remains only a candidate key: BlockManager still compares exact
+token IDs before reuse. A partial block has no cached hash entry, retains
+physical hash `-1`, and is not inserted into the persistent index until a later
+append fills it. Same-step reuse therefore covers only block-aligned prefixes;
+unaligned tails are computed independently.
+
+Exact token equality on one block is not sufficient to prove a chained prefix
+under an adversarial hash collision. Every published block therefore carries an
+immutable canonical lineage identity plus its parent identity. A duplicate
+publication inherits the existing identity only when hash, exact tokens, and
+parent lineage all agree; this keeps valid descendants reachable when the same
+content occupies a different physical page. A collision or destructive page
+reuse receives a new physical-generation identity, so an old child cannot be
+spliced onto the new parent. Claiming a cached-free page preserves its identity;
+only destructive reset increments the physical generation. With the current
+single-owner hash index, collisions may cause a safe miss, never a cross-lineage
+hit.
+
+The scheduler exposes initial persistent-hit blocks separately from same-step
+hit blocks. For an admitted request, initial hits are blocks that were already
+present in the initial snapshot and were still claimed; same-step hits are the
+additional blocks in its latest match. Requests left Waiting are not counted.
+Token metrics multiply those block counts by the configured block size.
+`computed_prompt_tokens` counts prompt tokens actually scheduled as new work;
+`same_step_reused_request_count` (the requested
+`same_step_reused_requests` count) counts requests with a positive same-step hit;
+and `same_step_reused_blocks` sums only the blocks gained after the initial
+snapshot. Keeping these categories separate prevents LPM cache survival from
+being attributed to same-step publication. For the targeted grouped-prefix
+workload, `duplicate_prefill_tokens` is the computed shared-prefix work beyond
+one required copy per prefix group;
+`first_step_prefill_admission_count` records how many Prefill requests entered
+the first Forward.
 
 Decode requests are preempted from the running tail only when the one-token
 decode reservation or its boundary KV block cannot fit. Decode work has
 priority over a paused chunk; a paused chunk in turn is considered before new
 waiting requests. A step returns `prefill_seqs + decode_seqs`, which is the
-`[P | D]` order consumed directly by the split FlashInfer wrappers.
+`[P | D]` order consumed directly by both attention modes. Same-step admission
+does not change Decode policy, the single-`chunked_req` rule, ModelRunner token
+packing, mixed-batch layout, AttentionBackend selection, or CUDA Graph routing.
 
 After sampling, completed or stopped requests release their block references.
 A fully prefetched prompt moves to `running`; the sole incomplete prefill is
@@ -298,8 +348,12 @@ future matching request.
   unavailable explicitly selected provider fail early.
 - FlashInfer page metadata is CUDA `int32`, one-dimensional CSR metadata; the
   decode suffix must have query length one for every sequence.
-- Prefix hashes are candidate keys, not proof of equality: token contents and
-  block lifecycle state are checked before reuse.
+- Prefix hashes are candidate keys, not proof of equality: token contents,
+  canonical parent lineage, and block lifecycle state are checked before reuse.
+- Admission fit checks happen before mutation and stop the lower-ranked Waiting
+  tail when the current request cannot fit. A stale plan, collision validation
+  failure, or impossible internal invariant raises immediately; the scheduler
+  does not attempt transactional rollback or silently retry a different order.
 - Performance comparisons must use the same model, dtype, prompt/output
   distribution, batch limits, warmup, backend, and block size. No performance
   number belongs in project documentation until its command, environment, and

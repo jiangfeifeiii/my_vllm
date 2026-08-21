@@ -2,36 +2,52 @@
   "backend_specific_metrics": {
     "cross_framework_comparable": false,
     "nano_vllm": {
-      "actually_computed_prompt_tokens": 10240,
-      "cached_block_eviction_count": 58,
+      "cached_block_eviction_count": 0,
+      "claimed_prefix_tokens": 24576,
+      "computed_prompt_tokens": 10240,
       "computed_shared_prefix_tokens": 8192,
-      "definition": "nano-vllm SchedulerMetrics; not compared to vLLM backend-native cache counters",
+      "definition": "nano-vllm SchedulerMetrics with disjoint initial persistent and same-step hit accounting; not compared to vLLM backend-native cache counters",
       "duplicate_prefill_tokens": 0,
+      "first_step_prefill_admission_count": 16,
+      "initial_persistent_hit_tokens": 0,
+      "initial_persistent_hit_tokens_after_first_step": 0,
+      "max_step_prefill_admission_count": 16,
       "output_token_count": 1024,
-      "output_token_throughput_tps": 237.82813224049366,
-      "p95_ttft_ms": 3633.090847999938,
-      "persistent_cache_hit_tokens": 24576,
-      "persistent_hit_tokens_after_first_step": 24576,
+      "output_token_throughput_tps": 681.3234230039808,
+      "p95_ttft_ms": 657.8945680012112,
       "preemption_count": 0,
+      "prompt_token_conservation": {
+        "accounted_prompt_tokens": 34816,
+        "balanced": true,
+        "computed_prompt_tokens": 10240,
+        "delta_tokens": 0,
+        "initial_persistent_hit_tokens": 0,
+        "same_step_hit_tokens": 24576,
+        "total_prompt_tokens": 34816
+      },
       "request_count": 16,
-      "request_throughput_rps": 3.7160645662577134,
-      "scheduler_step_count": 256,
-      "temporary_deprioritized_request_count": 12,
-      "temporary_deprioritized_seq_ids": [
-        5,
+      "request_throughput_rps": 10.6456784844372,
+      "same_step_hit_tokens": 24576,
+      "same_step_hit_tokens_after_first_step": 0,
+      "same_step_reused_blocks": 1536,
+      "same_step_reused_request_count": 12,
+      "same_step_reused_seq_ids": [
         6,
         7,
-        9,
+        8,
         10,
         11,
-        13,
+        12,
         14,
         15,
-        17,
+        16,
         18,
-        19
+        19,
+        20
       ],
-      "total_batch_completion_s": 4.305630247999943
+      "scheduler_step_count": 64,
+      "total_batch_completion_s": 1.5029572819985333,
+      "total_prompt_tokens": 34816
     },
     "vllm": {
       "definition": "vLLM RequestOutput.num_cached_tokens and a derived prompt-minus-cache count; not definition-equivalent to nano-vllm SchedulerMetrics",
@@ -43,29 +59,29 @@
     {
       "lower_is_better": true,
       "metric": "p95_ttft_ms",
-      "nano_over_vllm_ratio": 1.2404484915693188,
-      "nano_relative_delta_percent": 24.044849156931875,
-      "nano_vllm": 3633.090847999938,
+      "nano_over_vllm_ratio": 2.320958582519012,
+      "nano_relative_delta_percent": 132.09585825190123,
+      "nano_vllm": 657.8945680012112,
       "unit": "ms",
-      "vllm": 2928.852646999985
+      "vllm": 283.4581249990151
     },
     {
       "lower_is_better": false,
       "metric": "request_throughput_rps",
-      "nano_over_vllm_ratio": 0.8672397806882284,
-      "nano_relative_delta_percent": -13.276021931177166,
-      "nano_vllm": 3.7160645662577134,
+      "nano_over_vllm_ratio": 0.657499979431244,
+      "nano_relative_delta_percent": -34.25000205687559,
+      "nano_vllm": 10.6456784844372,
       "unit": "requests/s",
-      "vllm": 4.284933243385931
+      "vllm": 16.191146490447057
     },
     {
       "lower_is_better": true,
       "metric": "total_batch_completion_s",
-      "nano_over_vllm_ratio": 1.1530836364614352,
-      "nano_relative_delta_percent": 15.308363646143519,
-      "nano_vllm": 4.305630247999943,
+      "nano_over_vllm_ratio": 1.5209125951076499,
+      "nano_relative_delta_percent": 52.091259510765,
+      "nano_vllm": 1.5029572819985333,
       "unit": "s",
-      "vllm": 3.7340138320000733
+      "vllm": 0.9881943820000743
     }
   ],
   "comparison_kind": "eager_only_cross_framework",
@@ -75,9 +91,9 @@
     "chunked_prefill_enabled": true,
     "dtype": "bfloat16",
     "gpu_uuid": "GPU-d579820b-3886-c645-9f70-5649b0bdf393",
-    "logical_kv_blocks": 640,
-    "max_num_batched_tokens": 8704,
-    "max_num_seqs": 4,
+    "logical_kv_blocks": 2240,
+    "max_num_batched_tokens": 10240,
+    "max_num_seqs": 16,
     "prefix_caching_enabled": true,
     "same_arrival_order_and_time": true,
     "same_benchmark_script_sha256": true,
@@ -96,7 +112,7 @@
     "vllm_result": "/workspace/aiinfra/nano-vllm-v1/benchmark_results/eager_compare/in-batch.vllm.json"
   },
   "interpretation_boundary": "Compare Cache-Aware Scheduler behavior with vLLM's default eager scheduler only for this shared-prefix target workload.  Do not generalize these numbers to all workloads or attribute them to CUDA Graph.",
-  "schema_version": 1,
+  "schema_version": 2,
   "trace": {
     "path": "/workspace/aiinfra/nano-vllm-v1/benchmark_results/eager_compare/in-batch.trace.json",
     "request_manifest": [
@@ -278,7 +294,7 @@
       }
     ],
     "request_manifest_sha256": "1bc44d69e6ea521d48d05178ac6193109aae4558cd06ac8e0bc40fb6346c928c",
-    "sha256": "68391710ea9ced0a847dc1be385853a12bdf1bced20cb73fecdb97ea63ce3d0f"
+    "sha256": "4b6aca655ccd03cd4da344f53cfcac27b9fb654a2d98f8a07f990d56c17c159a"
   },
   "workload": "in_batch_prefix_burst"
 }

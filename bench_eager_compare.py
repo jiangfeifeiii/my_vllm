@@ -47,7 +47,7 @@ from pathlib import Path
 from typing import Any, Iterable, Sequence as TypingSequence
 
 
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
 BLOCK_SIZE = 16
 TARGET_MODEL_SHAPE = {
     "hidden_size": 1024,
@@ -67,14 +67,66 @@ WORKLOAD_CONFIGS: dict[str, dict[str, Any]] = {
     },
     "in-batch": {
         "name": "in_batch_prefix_burst",
-        "logical_kv_blocks": 640,
+        "logical_kv_blocks": 2240,
         "max_model_len": 2304,
-        "max_num_batched_tokens": 8704,
-        "max_num_seqs": 4,
+        "max_num_batched_tokens": 10240,
+        "max_num_seqs": 16,
         "prefix_groups": 4,
         "shared_prefix_len": 2048,
     },
 }
+
+
+def _expected_workload_contract(workload_key: str) -> dict[str, Any]:
+    profile = WORKLOAD_CONFIGS[workload_key]
+    contract: dict[str, Any] = {
+        "prefix_groups": profile["prefix_groups"],
+        "shared_prefix_len": profile["shared_prefix_len"],
+    }
+    if workload_key == "in-batch":
+        requests_per_group = 4
+        unique_suffix_len = 128
+        output_len = 64
+        request_count = profile["prefix_groups"] * requests_per_group
+        same_step_minimum_blocks = (
+            profile["prefix_groups"]
+            * (profile["shared_prefix_len"] // BLOCK_SIZE)
+            + request_count
+            * ((unique_suffix_len + output_len) // BLOCK_SIZE)
+        )
+        cold_worst_case_blocks = request_count * (
+            (profile["shared_prefix_len"] + unique_suffix_len + output_len)
+            // BLOCK_SIZE
+        )
+        if same_step_minimum_blocks != 704:
+            raise AssertionError(
+                "in-batch same-step KV capacity contract drifted: "
+                f"expected 704, got {same_step_minimum_blocks}"
+            )
+        if cold_worst_case_blocks != 2240:
+            raise AssertionError(
+                "in-batch cold KV capacity contract drifted: "
+                f"expected 2240, got {cold_worst_case_blocks}"
+            )
+        if profile["logical_kv_blocks"] < cold_worst_case_blocks:
+            raise AssertionError(
+                "in-batch logical KV blocks do not cover sixteen cold "
+                "requests without preemption"
+            )
+        contract.update(
+            {
+                "requests_per_group": requests_per_group,
+                "unique_suffix_len": unique_suffix_len,
+                "output_len": output_len,
+                "arrival_layout": "grouped_by_prefix",
+                "expected_off_first_step_admissions": 4,
+                "expected_on_first_step_admissions": request_count,
+                "same_step_minimum_blocks": same_step_minimum_blocks,
+                "cold_worst_case_blocks": cold_worst_case_blocks,
+                "comparison_logical_kv_blocks": profile["logical_kv_blocks"],
+            }
+        )
+    return contract
 
 
 def _package_version(distribution: str) -> str | None:
@@ -328,10 +380,7 @@ def _build_trace_data(
             "tensor_parallel_size": 1,
             "cuda_graphs": "none",
         },
-        "workload_contract": {
-            "prefix_groups": profile["prefix_groups"],
-            "shared_prefix_len": profile["shared_prefix_len"],
-        },
+        "workload_contract": _expected_workload_contract(workload),
         "phases": phases,
     }
     _validate_trace(trace)
@@ -567,10 +616,7 @@ def _validate_trace(trace: dict[str, Any]) -> None:
             f"{expected_contract}, got {contract}"
         )
     workload_contract = trace.get("workload_contract", {})
-    if workload_contract != {
-        "prefix_groups": profile["prefix_groups"],
-        "shared_prefix_len": profile["shared_prefix_len"],
-    }:
+    if workload_contract != _expected_workload_contract(workload_key):
         raise ValueError("trace workload contract changed")
     phases = trace.get("phases")
     if not isinstance(phases, list) or not phases:
@@ -651,7 +697,7 @@ def _nano_engine_kwargs(
         "kvcache_block_size": contract["block_size"],
         "chunked_prefill": True,
         "enable_lpm": True,
-        "enable_in_batch_prefix_deprioritization": True,
+        "enable_same_step_prefix_reuse": True,
         "attention_backend": "flashinfer",
         "attention_mode": "unified",
     }
@@ -700,7 +746,7 @@ def _validate_nano_runtime_config(
         ),
         "cache_aware_scheduler": (
             scheduler.enable_lpm is True
-            and scheduler.enable_in_batch_prefix_deprioritization is True
+            and scheduler.enable_same_step_prefix_reuse is True
         ),
         "flashinfer_unified": (
             config.attention_backend == "flashinfer"
@@ -1011,6 +1057,11 @@ def _run_nano(
                     "ttft_ms": row["ttft_ms"],
                     "completion_ms": row["completion_ms"],
                     "prefix_group": request["prefix_group"],
+                    "initial_persistent_hit_tokens": (
+                        row["initial_persistent_hit_tokens"]
+                    ),
+                    "same_step_hit_tokens": row["same_step_hit_tokens"],
+                    "computed_prompt_tokens": row["computed_prompt_tokens"],
                 }
             )
         request_rows.sort(key=lambda row: row["arrival_order"])
@@ -1040,7 +1091,7 @@ def _run_nano(
                     "logical_kv_blocks": logical_blocks,
                     "scheduler": (
                         "nano-vllm cache-aware "
-                        "(LPM + in-batch temporary deprioritization)"
+                        "(LPM + same-step prefix reuse)"
                     ),
                     "cudagraph_mode": mode,
                     "enforce_eager": llm.config.enforce_eager,
@@ -1056,8 +1107,9 @@ def _run_nano(
                     },
                     "backend_specific": {
                         "definition": (
-                            "nano-vllm SchedulerMetrics; not compared to vLLM "
-                            "backend-native cache counters"
+                            "nano-vllm SchedulerMetrics with disjoint initial "
+                            "persistent and same-step hit accounting; not compared "
+                            "to vLLM backend-native cache counters"
                         ),
                         **internal_metrics,
                     },
@@ -1403,6 +1455,114 @@ def _validate_recorded_runtime(result: dict[str, Any], framework: str) -> None:
         raise ValueError("vLLM result did not record its package version")
 
 
+def _validate_nano_backend_metrics(
+    result: dict[str, Any],
+    measured_requests: list[dict[str, Any]],
+) -> None:
+    metrics = result.get("metrics", {}).get("backend_specific", {})
+    required_counts = (
+        "initial_persistent_hit_tokens",
+        "same_step_hit_tokens",
+        "claimed_prefix_tokens",
+        "computed_prompt_tokens",
+        "total_prompt_tokens",
+        "same_step_reused_request_count",
+        "same_step_reused_blocks",
+        "first_step_prefill_admission_count",
+        "max_step_prefill_admission_count",
+    )
+    for name in required_counts:
+        value = metrics.get(name)
+        if type(value) is not int or value < 0:
+            raise ValueError(
+                f"nano-vllm backend metric {name} must be a non-negative integer"
+            )
+
+    initial_tokens = metrics["initial_persistent_hit_tokens"]
+    same_step_tokens = metrics["same_step_hit_tokens"]
+    claimed_tokens = metrics["claimed_prefix_tokens"]
+    computed_tokens = metrics["computed_prompt_tokens"]
+    total_prompt_tokens = sum(
+        request["prompt_len"] for request in measured_requests
+    )
+    if metrics["total_prompt_tokens"] != total_prompt_tokens:
+        raise ValueError("nano-vllm total_prompt_tokens differs from the trace")
+    if initial_tokens + same_step_tokens != claimed_tokens:
+        raise ValueError(
+            "nano-vllm initial + same-step hits do not equal claimed prefix tokens"
+        )
+    if claimed_tokens + computed_tokens != total_prompt_tokens:
+        raise ValueError("nano-vllm prompt-token conservation failed")
+    if same_step_tokens % BLOCK_SIZE != 0:
+        raise ValueError("nano-vllm same-step hit tokens are not block aligned")
+    if metrics["same_step_reused_blocks"] * BLOCK_SIZE != same_step_tokens:
+        raise ValueError("nano-vllm same-step block/token counts disagree")
+
+    conservation = metrics.get("prompt_token_conservation")
+    if not isinstance(conservation, dict):
+        raise ValueError("nano-vllm result has no prompt-token conservation proof")
+    expected_conservation = {
+        "initial_persistent_hit_tokens": initial_tokens,
+        "same_step_hit_tokens": same_step_tokens,
+        "computed_prompt_tokens": computed_tokens,
+        "accounted_prompt_tokens": total_prompt_tokens,
+        "total_prompt_tokens": total_prompt_tokens,
+        "delta_tokens": 0,
+        "balanced": True,
+    }
+    if conservation != expected_conservation:
+        raise ValueError("nano-vllm prompt-token conservation proof is invalid")
+
+    rows = result.get("requests", [])
+    if len(rows) != len(measured_requests):
+        raise ValueError("nano-vllm request metric row count differs from trace")
+    row_sums = {
+        "initial_persistent_hit_tokens": 0,
+        "same_step_hit_tokens": 0,
+        "computed_prompt_tokens": 0,
+    }
+    same_step_reused_requests = 0
+    for row in rows:
+        for name in row_sums:
+            value = row.get(name)
+            if type(value) is not int or value < 0:
+                raise ValueError(
+                    f"nano-vllm request metric {name} must be non-negative"
+                )
+            row_sums[name] += value
+        if (
+            row["initial_persistent_hit_tokens"]
+            + row["same_step_hit_tokens"]
+            + row["computed_prompt_tokens"]
+            != row["prompt_len"]
+        ):
+            raise ValueError(
+                f"nano-vllm request {row.get('request_id')} violates "
+                "prompt-token conservation"
+            )
+        if row["same_step_hit_tokens"] > 0:
+            same_step_reused_requests += 1
+
+    if row_sums["initial_persistent_hit_tokens"] != initial_tokens:
+        raise ValueError("nano-vllm request initial-hit rows do not match summary")
+    if row_sums["same_step_hit_tokens"] != same_step_tokens:
+        raise ValueError("nano-vllm request same-step rows do not match summary")
+    if row_sums["computed_prompt_tokens"] != computed_tokens:
+        raise ValueError("nano-vllm request compute rows do not match summary")
+    if (
+        metrics["same_step_reused_request_count"]
+        != same_step_reused_requests
+    ):
+        raise ValueError("nano-vllm same-step reused request count is invalid")
+    if not (
+        0
+        < metrics["first_step_prefill_admission_count"]
+        <= metrics["max_step_prefill_admission_count"]
+        <= len(measured_requests)
+    ):
+        raise ValueError("nano-vllm prefill admission counts are invalid")
+
+
 def _validate_result(
     result: dict[str, Any],
     framework: str,
@@ -1543,6 +1703,8 @@ def _validate_result(
         raise ValueError(f"{framework} throughput does not match completion time")
     if max(row["completion_ms"] for row in result_rows) > elapsed * 1e3 + 1e-6:
         raise ValueError(f"{framework} completion time ends before a request")
+    if framework == "nano-vllm":
+        _validate_nano_backend_metrics(result, measured)
     _validate_recorded_runtime(result, framework)
 
 

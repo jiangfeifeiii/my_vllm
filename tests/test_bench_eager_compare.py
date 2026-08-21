@@ -54,6 +54,7 @@ def test_vllm_internal_request_id_maps_to_external_output_id():
 def test_lpm_trace_reuses_target_workload(model_identity):
     trace = _trace("lpm", model_identity)
 
+    assert trace["schema_version"] == 2
     assert trace["workload"] == "shared_long_prefix_kv_pressure"
     assert trace["execution_contract"] == {
         "dtype": "bfloat16",
@@ -106,7 +107,22 @@ def test_in_batch_trace_preserves_grouped_arrival_order(model_identity):
     requests = benchmark._measured_phase(trace)["requests"]
 
     assert len(trace["phases"]) == 1
-    assert trace["execution_contract"]["logical_kv_blocks"] == 640
+    assert trace["execution_contract"]["logical_kv_blocks"] == 2240
+    assert trace["execution_contract"]["max_num_batched_tokens"] == 10240
+    assert trace["execution_contract"]["max_num_seqs"] == 16
+    assert trace["workload_contract"] == {
+        "prefix_groups": 4,
+        "shared_prefix_len": 2048,
+        "requests_per_group": 4,
+        "unique_suffix_len": 128,
+        "output_len": 64,
+        "arrival_layout": "grouped_by_prefix",
+        "expected_off_first_step_admissions": 4,
+        "expected_on_first_step_admissions": 16,
+        "same_step_minimum_blocks": 704,
+        "cold_worst_case_blocks": 2240,
+        "comparison_logical_kv_blocks": 2240,
+    }
     assert [request["request_id"] for request in requests] == [
         f"{group}{index}"
         for group in ("A", "B", "C", "D")
@@ -171,6 +187,8 @@ def test_backend_configs_force_eager_and_match_budgets(model_identity):
     assert nano["enforce_eager"] is True
     assert nano["cudagraph_mode"] == "none"
     assert nano["chunked_prefill"] is True
+    assert nano["enable_same_step_prefix_reuse"] is True
+    assert "enable_in_batch_prefix_deprioritization" not in nano
     assert vllm["enforce_eager"] is True
     assert vllm["enable_prefix_caching"] is True
     assert vllm["enable_chunked_prefill"] is True
@@ -195,21 +213,28 @@ def _fake_result(
     scale = 1.0 if framework == "nano-vllm" else 1.25
     requests = []
     for request in benchmark._measured_phase(trace)["requests"]:
-        requests.append(
-            {
-                "request_id": request["request_id"],
-                "arrival_order": request["arrival_order"],
-                "prompt_len": request["prompt_len"],
-                "prompt_sha256": benchmark._prompt_sha256(
-                    request["input_token_ids"]
-                ),
-                "requested_output_len": request["output_len"],
-                "output_tokens": request["output_len"],
-                "ttft_ms": (10.0 + request["arrival_order"]) * scale,
-                "completion_ms": (100.0 + request["arrival_order"]) * scale,
-                "prefix_group": request["prefix_group"],
-            }
-        )
+        row = {
+            "request_id": request["request_id"],
+            "arrival_order": request["arrival_order"],
+            "prompt_len": request["prompt_len"],
+            "prompt_sha256": benchmark._prompt_sha256(
+                request["input_token_ids"]
+            ),
+            "requested_output_len": request["output_len"],
+            "output_tokens": request["output_len"],
+            "ttft_ms": (10.0 + request["arrival_order"]) * scale,
+            "completion_ms": (100.0 + request["arrival_order"]) * scale,
+            "prefix_group": request["prefix_group"],
+        }
+        if framework == "nano-vllm":
+            row.update(
+                {
+                    "initial_persistent_hit_tokens": 0,
+                    "same_step_hit_tokens": 0,
+                    "computed_prompt_tokens": request["prompt_len"],
+                }
+            )
+        requests.append(row)
     priming = [
         {
             "request_id": request["request_id"],
@@ -270,7 +295,45 @@ def _fake_result(
                 "request_throughput_rps": len(requests) / elapsed,
                 "total_batch_completion_s": elapsed,
             },
-            "backend_specific": {"definition": framework},
+            "backend_specific": (
+                {
+                    "definition": framework,
+                    "initial_persistent_hit_tokens": 0,
+                    "same_step_hit_tokens": 0,
+                    "claimed_prefix_tokens": 0,
+                    "computed_prompt_tokens": sum(
+                        row["prompt_len"] for row in requests
+                    ),
+                    "total_prompt_tokens": sum(
+                        row["prompt_len"] for row in requests
+                    ),
+                    "prompt_token_conservation": {
+                        "initial_persistent_hit_tokens": 0,
+                        "same_step_hit_tokens": 0,
+                        "computed_prompt_tokens": sum(
+                            row["prompt_len"] for row in requests
+                        ),
+                        "accounted_prompt_tokens": sum(
+                            row["prompt_len"] for row in requests
+                        ),
+                        "total_prompt_tokens": sum(
+                            row["prompt_len"] for row in requests
+                        ),
+                        "delta_tokens": 0,
+                        "balanced": True,
+                    },
+                    "same_step_reused_request_count": 0,
+                    "same_step_reused_blocks": 0,
+                    "first_step_prefill_admission_count": min(
+                        4, len(requests)
+                    ),
+                    "max_step_prefill_admission_count": min(
+                        4, len(requests)
+                    ),
+                }
+                if framework == "nano-vllm"
+                else {"definition": framework}
+            ),
         },
         "priming_requests": priming,
         "requests": requests,
@@ -417,6 +480,26 @@ def test_compare_rejects_runtime_config_manifest_or_gpu_drift(
     benchmark._write_json(nano_path, nano)
     benchmark._write_json(vllm_path, vllm)
     with pytest.raises(ValueError, match="identical GPU"):
+        benchmark._compare_results(trace_path, nano_path, vllm_path)
+
+
+def test_compare_rejects_nano_prompt_accounting_drift(
+    tmp_path,
+    model_identity,
+):
+    trace = _trace("in-batch", model_identity)
+    trace_path = tmp_path / "trace.json"
+    nano_path = tmp_path / "nano.json"
+    vllm_path = tmp_path / "vllm.json"
+    benchmark._write_json(trace_path, trace)
+    trace_sha256 = benchmark._sha256_file(trace_path)
+    nano = _fake_result("nano-vllm", trace_path, trace, trace_sha256)
+    vllm = _fake_result("vllm", trace_path, trace, trace_sha256)
+    nano["metrics"]["backend_specific"]["computed_prompt_tokens"] -= 1
+    benchmark._write_json(nano_path, nano)
+    benchmark._write_json(vllm_path, vllm)
+
+    with pytest.raises(ValueError, match="prompt-token conservation"):
         benchmark._compare_results(trace_path, nano_path, vllm_path)
 
 

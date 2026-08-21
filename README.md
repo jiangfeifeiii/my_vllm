@@ -2,8 +2,8 @@
 
 Nano-vLLM-v1 is a compact Qwen3 inference engine for studying and testing a
 vLLM-v1-style execution path. It includes paged KV cache, prefix caching,
-cache-aware scheduling, chunked prefill, tensor parallelism, pluggable
-operators, and phase-specialized FlashInfer attention.
+stable cache-aware LPM, same-step full-block prefix reuse, chunked prefill,
+tensor parallelism, pluggable operators, and phase-specialized attention.
 
 The production inference path currently targets NVIDIA CUDA GPUs and model
 weights in FP16 or BF16. Linear and tensor-parallel projection layers
@@ -76,6 +76,8 @@ llm = LLM(
     attention_mode="unified",
     kvcache_block_size=16,
     chunked_prefill=True,
+    enable_lpm=True,
+    enable_same_step_prefix_reuse=True,
 )
 params = SamplingParams(temperature=0.6, max_tokens=256)
 outputs = llm.generate(["Hello, Nano-vLLM."], params)
@@ -86,6 +88,48 @@ print(outputs[0]["text"])
 `[Prefill | Decode]` query through one paged prefill call. Select `"split"`
 to use phase-specialized prefill/decode wrappers writing directly into one
 reusable output buffer; the split path does not concatenate temporary outputs.
+
+### Prefix-cache admission
+
+`enable_lpm=True` and `enable_same_step_prefix_reuse=True` are independent,
+default-on scheduler controls. At the start of a step, the scheduler snapshots
+the Waiting queue, matches the persistent cache once, and performs a stable
+longest-prefix-match sort. Equal initial hits retain FCFS order. That ranked
+order is then fixed for the rest of the step.
+
+With Same-step Prefix Reuse enabled, each ranked request is committed in
+`latest lookup -> capacity check -> claim -> allocate/publish` order. A later
+request can therefore reuse full prefix blocks published by an earlier request
+in the same step. Its latest hit changes only the remaining prompt work and KV
+capacity required; it never changes the fixed LPM order. Capacity includes both
+cached-free blocks that must be claimed and new blocks for the uncached suffix.
+Decode and resumed-chunk reservations remain protected.
+
+This same-step lookup/publish behavior follows the vLLM-style request commit
+model; it is combined here with stable persistent-hit LPM ordering. LPM decides
+which request consumes surviving cache first, while Same-step Prefix Reuse
+removes duplicate work after that order has been fixed.
+
+Set `enable_same_step_prefix_reuse=False` for the frozen-plan ablation. In that
+mode, all Waiting admissions use only the initial persistent match snapshot;
+prefixes published by an earlier request are not looked up again until a later
+step. This does not disable persistent prefix caching or LPM. Likewise,
+`enable_lpm=False` restores FCFS ranking without disabling Same-step Prefix
+Reuse.
+
+Only complete, block-aligned pages are published. Partial pages keep hash `-1`
+and every request computes its own unaligned tail. Scheduler accounting keeps
+initial persistent hits separate from newly acquired same-step hits; token
+totals are block counts multiplied by `kvcache_block_size`. Computed prompt
+tokens count only newly scheduled prompt work, while same-step reused requests
+and blocks count requests with a positive same-step gain and the corresponding
+newly reused full blocks.
+
+Chained hashes remain candidate keys rather than correctness proofs. Each
+published block also records an immutable canonical lineage identity and its
+parent identity. Equivalent re-publications inherit that identity, preserving
+valid descendants across different physical pages; a real hash collision or
+destructive page reuse gets a new identity and safely stops matching.
 
 ### CUDA Graph policy
 
@@ -219,8 +263,11 @@ python -m pytest -q \
   tests/test_native_operators.py \
   tests/test_block_manager_baseline.py \
   tests/test_block_manager_chunked.py \
+  tests/test_block_manager_config.py \
   tests/test_block_manager_planning.py \
   tests/test_scheduler_cache_aware.py \
+  tests/test_bench_scheduler_metrics.py \
+  tests/test_bench_eager_compare.py \
   tests/test_cudagraph_runtime.py
 
 FLASHINFER_CUDA_ARCH_LIST=12.0f FLASHINFER_DISABLE_JIT=1 \
@@ -305,14 +352,14 @@ PYTHONHASHSEED=0 FLASHINFER_CUDA_ARCH_LIST=12.0f FLASHINFER_DISABLE_JIT=1 \
 PYTHONHASHSEED=0 FLASHINFER_CUDA_ARCH_LIST=12.0f FLASHINFER_DISABLE_JIT=1 \
 /tmp/nanovllm-flashinfer-env/bin/python bench_scheduler.py in-batch \
   --mode off --model /workspace/aiinfra/models/Qwen3-0.6B \
-  --logical-kv-blocks 640 --gpu-memory-utilization 0.5 \
+  --logical-kv-blocks 2240 --gpu-memory-utilization 0.6 \
   --attention-mode unified --enforce-eager --seed 2026 \
   --output benchmark_results/rtx5070/in_batch_off.json
 
 PYTHONHASHSEED=0 FLASHINFER_CUDA_ARCH_LIST=12.0f FLASHINFER_DISABLE_JIT=1 \
 /tmp/nanovllm-flashinfer-env/bin/python bench_scheduler.py in-batch \
   --mode on --model /workspace/aiinfra/models/Qwen3-0.6B \
-  --logical-kv-blocks 640 --gpu-memory-utilization 0.5 \
+  --logical-kv-blocks 2240 --gpu-memory-utilization 0.6 \
   --attention-mode unified --enforce-eager --seed 2026 \
   --output benchmark_results/rtx5070/in_batch_on.json
 
@@ -325,24 +372,21 @@ PYTHONHASHSEED=0 FLASHINFER_CUDA_ARCH_LIST=12.0f FLASHINFER_DISABLE_JIT=1 \
 
 The runs used RTX 5070 SM120, driver 596.49, Torch 2.11.0+cu128,
 CUDA 12.8, FlashInfer/cubin 0.6.17, and the
-`flashinfer-jit-cache 0.6.17+cu129` AOT cache with JIT disabled. They were
-captured from the Stage-3 worktree based on `bf16747`; the raw JSON records
-the dirty state and exact script hashes
-(`bench_scheduler.py=1b52cff92b4b9f339646c713b40b82c0072cf51ddc2dac7836179c9d659ae21e`,
-`bench_attention.py=8c41c805e5169fc0894472db589d79eaa358c939d83c0a222cb2ed8acb5b7b34`).
+`flashinfer-jit-cache 0.6.17+cu129` AOT cache with JIT disabled. Each schema-v2
+JSON records the source commit/dirty state, command, runtime configuration, and
+exact benchmark-script SHA-256.
 
 #### Scheduler LPM
 
 The measured phase contains 12 cold requests followed by 12 followers of three
-resident 4096-token prefixes. The first FCFS step scheduled `Cold1..Cold4`
-and directly recorded 103 evictions; the first LPM step scheduled
-`A1,B1,C1,A2`, claimed 16,384 cached tokens, and recorded no eviction.
+resident 4096-token prefixes. The first FCFS step schedules `Cold1..Cold4`;
+the first LPM step schedules `A1,B1,C1,A2` and consumes the surviving
+persistent prefixes before the cold requests can evict them.
 
-| Policy | Persistent hit tokens | Computed prompt tokens | Cached-block evictions | Preemptions | P95 TTFT (ms) | Throughput (req/s) | Completion (s) |
-|---|---:|---:|---:|---:|---:|---:|---:|
-| FCFS | 40,528 | 19,983 | 1,242 | 0 | 6,787.689 | 3.192 | 7.519 |
-| LPM | 49,152 | 11,359 | 704 | 0 | 5,433.597 | 3.609 | 6.651 |
-| LPM vs FCFS | +21.3% | -43.2% | -43.3% | unchanged | -19.9% | +13.1% | -11.6% |
+| Policy | Initial persistent hits | Same-step hits | Computed prompt | Cached-block evictions | Preemptions | P95 TTFT (ms) | Throughput (req/s) | Completion (s) |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|
+| FCFS | 32,768 | 4,096 | 23,647 | 1,471 | 0 | 5,980.160 | 3.408 | 7.043 |
+| LPM | 49,152 | 0 | 11,359 | 704 | 0 | 4,401.418 | 4.694 | 5.113 |
 
 Raw request/step traces:
 [`lpm_fcfs.json`](benchmark_results/rtx5070/lpm_fcfs.json) and
@@ -352,15 +396,22 @@ request attribution.
 
 #### In-batch Prefix Burst
 
-All 16 requests arrive together in four groups with 2048 shared tokens.
-Temporary OFF admits `A1..A4` first. Temporary ON marks 12 followers and
-admits `A1,B1,C1,D1`; followers later receive ordinary persistent hits.
+All 16 requests arrive together as `A1..A4, B1..B4, C1..C4, D1..D4`; each
+group shares 2048 tokens and has a 128-token unique suffix. Both variants use
+the same 2,240-block cap, which is the cold worst case, so neither result is
+helped by preemption. OFF freezes the initial misses. ON keeps exactly the same
+stable order, but each follower observes its group leader's newly published
+full blocks.
 
-| Policy | Temporary followers | Later persistent hit tokens | Computed prompt tokens | Duplicate prefill tokens | P95 TTFT (ms) | Throughput (req/s) | Completion (s) |
-|---|---:|---:|---:|---:|---:|---:|---:|
-| LPM | 0 | 0 | 34,816 | 24,576 | 3,601.997 | 3.695 | 4.330 |
-| LPM + Temporary Deprioritization | 12 | 24,576 | 10,240 | 0 | 3,184.553 | 3.894 | 4.108 |
-| Temporary ON vs OFF | +12 | +24,576 | -70.6% | -100.0% | -11.6% | +5.4% | -5.1% |
+| Policy | Initial hits | Same-step hits | Computed prompt | Duplicate prefill | First-step admissions | Reused requests / blocks | Preemptions | P95 TTFT (ms) | Throughput (req/s) | Completion (s) |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|
+| Same-step OFF | 0 | 0 | 34,816 | 24,576 | 4 | 0 / 0 | 0 | 959.989 | 8.238 | 1.942 |
+| Same-step ON | 0 | 24,576 | 10,240 | 0 | 16 | 12 / 1,536 | 0 | 382.066 | 12.331 | 1.298 |
+
+The requested `same_step_reused_requests` count is serialized as
+`same_step_reused_request_count`; `same_step_reused_blocks` is the exact
+full-block total. Prompt-token conservation is asserted per request and in
+aggregate in both files.
 
 Raw request/step traces:
 [`in_batch_off.json`](benchmark_results/rtx5070/in_batch_off.json) and
@@ -462,7 +513,7 @@ The validated machine-readable and rendered tables are
 [`cudagraph_comparison.json`](benchmark_results/cudagraph/cudagraph_comparison.json)
 and [`cudagraph_comparison.md`](benchmark_results/cudagraph/cudagraph_comparison.md).
 These figures validate the runtime feature only and are not evidence about LPM,
-temporary deprioritization, or vLLM scheduler performance.
+Same-step Prefix Reuse, or vLLM scheduler performance.
 
 ### Eager-only nano-vLLM versus vLLM
 
@@ -475,19 +526,20 @@ microbenchmark.
 The comparison validator confirmed identical input token IDs, arrival order
 and time, output lengths, request manifests, model path and file hashes,
 tokenizer files, seed, ignore-EOS setting, and benchmark script
-(`033f8215c221f65103e6975ef3904405d105a99164c4ac1725d143aba60100a3`).
+(`ea3ad3c150a64df358c92b0dcdf3d1c53bc807154ab4e72476e8a451b6edef6f`).
 Both runs used the same RTX 5070
 (`GPU-d579820b-3886-c645-9f70-5649b0bdf393`) with driver 596.49, Torch
 2.11.0+cu128, BF16, and seed 2026 reset before
 the measured phase, temperature 1.0, tensor parallel size 1, prefix caching,
-chunked prefill, 16-token blocks, and `max_num_seqs=4`. Both result files
+chunked prefill, and 16-token blocks. LPM uses `max_num_seqs=4`; In-batch
+uses `max_num_seqs=16`. Both result files
 report `cudagraph_mode=none` and `enforce_eager=true`: nano-vLLM explicitly
 uses `CUDAGraphPolicy.NONE`, while vLLM uses `enforce_eager=True`.
 
 | Workload | Measured requests (+ priming) | Logical KV blocks | Max model / batched tokens | Trace SHA-256 | Manifest SHA-256 |
 |---|---:|---:|---:|---|---|
-| Long-prefix KV pressure (LPM) | 24 (+3) | 896 | 4,352 / 16,384 | `5ca261fe6303284021acea7883f71cad3e288dc764e13452ab807d201bc44188` | `bd4ae18070ec2fd8961642aa50b539941068a8f2ab7d8abc8f7345100dd1906b` |
-| In-batch prefix burst | 16 (+0) | 640 | 2,304 / 8,704 | `68391710ea9ced0a847dc1be385853a12bdf1bced20cb73fecdb97ea63ce3d0f` | `1bc44d69e6ea521d48d05178ac6193109aae4558cd06ac8e0bc40fb6346c928c` |
+| Long-prefix KV pressure (LPM) | 24 (+3) | 896 | 4,352 / 16,384 | `a3f29bf406cd8cbeff837712e92ba9e66fd1522f2bf4d525d44c2a8fd42e1a53` | `bd4ae18070ec2fd8961642aa50b539941068a8f2ab7d8abc8f7345100dd1906b` |
+| In-batch prefix burst | 16 (+0) | 2,240 | 2,304 / 10,240 | `4b6aca655ccd03cd4da344f53cfcac27b9fb654a2d98f8a07f990d56c17c159a` | `1bc44d69e6ea521d48d05178ac6193109aae4558cd06ac8e0bc40fb6346c928c` |
 
 Both traces identify the same Qwen3-0.6B model and tokenizer files:
 
@@ -506,15 +558,24 @@ files only; they are not compared across backends.
 
 | Workload | Backend | P95 TTFT (ms) | Throughput (req/s) | Completion (s) |
 |---|---|---:|---:|---:|
-| Long-prefix KV pressure | nano-vLLM | 5,993.797 | 3.456 | 6.944 |
-| Long-prefix KV pressure | vLLM | **4,526.665** | **4.440** | **5.405** |
-| In-batch prefix burst | nano-vLLM | 3,633.091 | 3.716 | 4.306 |
-| In-batch prefix burst | vLLM | **2,928.853** | **4.285** | **3.734** |
+| Long-prefix KV pressure | nano-vLLM | 4,345.851 | 4.719 | 5.086 |
+| Long-prefix KV pressure | vLLM | **3,650.615** | **5.674** | **4.230** |
+| In-batch prefix burst | nano-vLLM | 657.895 | 10.646 | 1.503 |
+| In-batch prefix burst | vLLM | **283.458** | **16.191** | **0.988** |
 
 vLLM was faster on all three comparable metrics in both RTX 5070 runs. This
 result is limited to these traces and software stacks; it must not be
 generalized to other workloads or attributed to CUDA Graph, because both
 backends were forced to Eager execution.
+
+Cache counters remain backend-native rather than cross-framework comparable.
+On the In-batch trace, nano-vLLM records 24,576 same-step hit tokens and 10,240
+computed prompt tokens; vLLM reports 24,576 cached prompt tokens and a derived
+10,240 prompt-minus-cache count. On the LPM trace, nano-vLLM records 49,152
+initial persistent-hit tokens, zero same-step tokens, and 11,359 computed
+prompt tokens; vLLM reports 36,864 cached tokens and a derived 23,647. These
+numbers are useful diagnostics, but only P95 TTFT, request throughput, and
+completion time are validated as definition-equivalent.
 
 #### Reproduction
 

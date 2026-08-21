@@ -169,6 +169,13 @@ def test_case_summary_keeps_batch_latency_tpot_and_throughput_distinct():
     assert summary["graph_bucket_hit_rate"] == 1.0
 
 
+def test_runtime_uses_same_step_prefix_reuse_config():
+    source = inspect.getsource(benchmark._run)
+
+    assert "enable_same_step_prefix_reuse=True" in source
+    assert "enable_in_batch_prefix_deprioritization" not in source
+
+
 def test_shared_prefix_capacity_scales_with_tail_not_batch_times_context():
     case = benchmark.CaseSpec(batch_size=32, kv_length=4096)
 
