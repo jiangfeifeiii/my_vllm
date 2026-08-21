@@ -1,5 +1,12 @@
 from dataclasses import dataclass
+from enum import Enum
 import torch
+
+
+class BatchType(str, Enum):
+    PURE_PREFILL = "pure_prefill"
+    PURE_DECODE = "pure_decode"
+    MIXED = "mixed"
 
 
 @dataclass
@@ -19,6 +26,7 @@ class Context:
     num_prefill_seqs: int | None = None
     num_prefill_tokens: int | None = None
     num_decode_tokens: int | None = None
+    batch_type: BatchType | None = None
 
 
 _CONTEXT = Context()
@@ -44,6 +52,7 @@ def set_context(
     num_prefill_seqs=None,
     num_prefill_tokens=None,
     num_decode_tokens=None,
+    batch_type=None,
 ):
     global _CONTEXT
     _CONTEXT = Context(
@@ -62,6 +71,7 @@ def set_context(
         num_prefill_seqs=num_prefill_seqs,
         num_prefill_tokens=num_prefill_tokens,
         num_decode_tokens=num_decode_tokens,
+        batch_type=batch_type,
     )
 
 

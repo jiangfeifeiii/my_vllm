@@ -85,6 +85,14 @@ The scheduler naturally emits a packed batch in this order:
 |<----------- prefill query tokens ----------->|<- one token per sequence ->|
 ```
 
+`ModelRunner.prepare_model_input` turns that scheduler-provided phase boundary
+into one explicit `Context.batch_type`: `PURE_PREFILL`, `PURE_DECODE`, or
+`MIXED`. The type describes execution semantics rather than tensor shape. A
+single-token chunk continuation remains `PURE_PREFILL`, while a mixed batch in
+which every request happens to have `q_len=1` remains `MIXED`. Page tables and
+Q/K length relationships continue to describe cache layout and metadata; they
+are not used to infer the batch type.
+
 The model runner records `num_prefill_seqs`, `num_prefill_tokens`, and
 `num_decode_tokens` while building one set of page CSR metadata. In the default
 `attention_mode="unified"`, `plan` passes the full metadata to the paged

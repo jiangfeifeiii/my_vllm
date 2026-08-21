@@ -13,7 +13,12 @@ from nanovllm.layers.attention_backend import (
 )
 from nanovllm.layers.sampler import Sampler
 from nanovllm.layers.operators import OperatorResolver, load_optional_providers
-from nanovllm.utils.context import set_context, get_context, reset_context
+from nanovllm.utils.context import (
+    BatchType,
+    get_context,
+    reset_context,
+    set_context,
+)
 from nanovllm.utils.loader import load_model
 
 
@@ -195,9 +200,17 @@ class ModelRunner:
         seqs: list[Sequence],
         num_prefill_seqs: int | None = None,
     ):
+        if not seqs:
+            raise ValueError("cannot prepare an empty execution batch")
         if num_prefill_seqs is None:
             num_prefill_seqs = len(seqs)
         assert 0 <= num_prefill_seqs <= len(seqs)
+        if num_prefill_seqs == 0:
+            batch_type = BatchType.PURE_DECODE
+        elif num_prefill_seqs == len(seqs):
+            batch_type = BatchType.PURE_PREFILL
+        else:
+            batch_type = BatchType.MIXED
         num_prefill_tokens = sum(
             seq.num_new_tokens for seq in seqs[:num_prefill_seqs]
         )
@@ -288,6 +301,7 @@ class ModelRunner:
             num_prefill_seqs=num_prefill_seqs,
             num_prefill_tokens=num_prefill_tokens,
             num_decode_tokens=num_decode_tokens,
+            batch_type=batch_type,
         )
         self.attention_backend.plan(get_context())
         return input_ids, positions
@@ -308,6 +322,7 @@ class ModelRunner:
         use_graph = (
             self.use_cudagraph
             and input_ids.size(0) <= 512
+            and context.batch_type is BatchType.PURE_DECODE
             and context.max_seqlen_q == 1
             and context.block_tables is not None
         )
@@ -361,7 +376,12 @@ class ModelRunner:
 
         for bs in reversed(self.graph_bs):
             graph = torch.cuda.CUDAGraph()
-            set_context(slot_mapping=slot_mapping[:bs], context_lens=context_lens[:bs], block_tables=block_tables[:bs])
+            set_context(
+                slot_mapping=slot_mapping[:bs],
+                context_lens=context_lens[:bs],
+                block_tables=block_tables[:bs],
+                batch_type=BatchType.PURE_DECODE,
+            )
             outputs[:bs] = self.model(input_ids[:bs], positions[:bs])    # warmup
             with torch.cuda.graph(graph, self.graph_pool):
                 outputs[:bs] = self.model(input_ids[:bs], positions[:bs])    # capture

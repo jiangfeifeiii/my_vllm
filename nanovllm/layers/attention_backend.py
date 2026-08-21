@@ -7,6 +7,8 @@ from typing import Any
 import torch
 from flash_attn import flash_attn_varlen_func
 
+from nanovllm.utils.context import BatchType
+
 FLASHINFER_WORKSPACE_BYTES = 64 * 1024 * 1024
 
 _FLASHINFER_ATTENTION_IMPORT_ERROR: Exception | None = None
@@ -309,6 +311,21 @@ class FlashInferAttentionBackend(AttentionBackend):
             if not bool(torch.all(decode_q_lens == 1).item()):
                 raise ValueError(
                     "every sequence in the decode suffix must have q_len == 1"
+                )
+
+        if num_prefill_seqs == 0:
+            expected_batch_type = BatchType.PURE_DECODE
+        elif num_prefill_seqs == batch_size:
+            expected_batch_type = BatchType.PURE_PREFILL
+        else:
+            expected_batch_type = BatchType.MIXED
+        batch_type = getattr(context, "batch_type", None)
+        if batch_type is not None:
+            if not isinstance(batch_type, BatchType):
+                raise TypeError("context.batch_type must be a BatchType")
+            if batch_type is not expected_batch_type:
+                raise ValueError(
+                    "context.batch_type does not match num_prefill_seqs"
                 )
 
         if self.attention_mode == "unified":

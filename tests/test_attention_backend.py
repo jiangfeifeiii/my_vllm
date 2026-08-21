@@ -12,6 +12,7 @@ from nanovllm.layers.attention_backend import (
     FlashInferAttentionBackend,
     LegacyFlashAttentionBackend,
 )
+from nanovllm.utils.context import BatchType
 
 
 class AttentionBackendValidationTest(TestCase):
@@ -467,6 +468,21 @@ class FlashInferAttentionBackendTest(TestCase):
         self.assertTrue(bool(torch.all(output[:3] == 2).item()))
         self.assertTrue(bool(torch.all(output[3:] == 3).item()))
 
+    def test_plan_rejects_batch_type_boundary_mismatch(self):
+        context, _, _, _ = _phase_case(
+            torch.bfloat16,
+            (3, 1),
+            (19, 17),
+            1,
+        )
+        context.batch_type = BatchType.PURE_DECODE
+
+        with self.assertRaisesRegex(
+            ValueError,
+            "batch_type does not match",
+        ):
+            self._backend().plan(context)
+
     def test_cacheless_warmup_uses_ragged_fallback(self):
         torch.manual_seed(223)
         sequence_lengths = (3, 1)
@@ -545,6 +561,12 @@ def _phase_case(
     page_indices = torch.arange(
         kv_indptr[-1], device="cuda", dtype=torch.int32
     )
+    if num_prefill_seqs == 0:
+        batch_type = BatchType.PURE_DECODE
+    elif num_prefill_seqs == len(query_lengths):
+        batch_type = BatchType.PURE_PREFILL
+    else:
+        batch_type = BatchType.MIXED
     context = SimpleNamespace(
         page_q_indptr=page_q_indptr,
         page_kv_indptr=page_kv_indptr,
@@ -555,6 +577,7 @@ def _phase_case(
         num_prefill_seqs=num_prefill_seqs,
         num_prefill_tokens=sum(query_lengths[:num_prefill_seqs]),
         num_decode_tokens=sum(query_lengths[num_prefill_seqs:]),
+        batch_type=batch_type,
     )
     q = torch.randn(
         q_indptr[-1], 16, 128, device="cuda", dtype=dtype

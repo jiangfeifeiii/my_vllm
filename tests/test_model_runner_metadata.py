@@ -6,7 +6,7 @@ import torch
 
 from nanovllm.engine.model_runner import ModelRunner
 from nanovllm.engine.sequence import Sequence
-from nanovllm.utils.context import get_context, reset_context
+from nanovllm.utils.context import BatchType, get_context, reset_context
 
 
 def _tolist(tensor: torch.Tensor) -> list[int]:
@@ -104,6 +104,7 @@ class ModelRunnerMetadataTest(TestCase):
         self.assertEqual(context.num_prefill_seqs, 2)
         self.assertEqual(context.num_prefill_tokens, 8)
         self.assertEqual(context.num_decode_tokens, 0)
+        self.assertIs(context.batch_type, BatchType.PURE_PREFILL)
 
     def test_warmup_without_block_table_has_empty_page_metadata(self):
         warmup = Sequence([10, 11, 12, 13], block_size=16)
@@ -126,6 +127,7 @@ class ModelRunnerMetadataTest(TestCase):
         self.assertEqual(context.num_prefill_seqs, 1)
         self.assertEqual(context.num_prefill_tokens, 4)
         self.assertEqual(context.num_decode_tokens, 0)
+        self.assertIs(context.batch_type, BatchType.PURE_PREFILL)
 
     def test_contiguous_prefill_decode_phase_boundary(self):
         prefill = Sequence([1, 2, 3], block_size=16)
@@ -153,6 +155,66 @@ class ModelRunnerMetadataTest(TestCase):
         self.assertEqual(context.num_prefill_seqs, 1)
         self.assertEqual(context.num_prefill_tokens, 3)
         self.assertEqual(context.num_decode_tokens, 1)
+        self.assertIs(context.batch_type, BatchType.MIXED)
+
+    def test_multi_token_chunk_continuation_is_pure_prefill(self):
+        chunked = Sequence(list(range(20)), block_size=16)
+        chunked.num_cached_tokens = 16
+        chunked.num_new_tokens = 4
+        chunked.block_table = [3, 4]
+
+        self.runner.prepare_model_input([chunked], num_prefill_seqs=1)
+        context = get_context()
+
+        self.assertEqual(context.max_seqlen_q, 4)
+        self.assertIs(context.batch_type, BatchType.PURE_PREFILL)
+
+    def test_single_token_chunk_continuation_is_pure_prefill(self):
+        chunked = Sequence(list(range(17)), block_size=16)
+        chunked.num_cached_tokens = 16
+        chunked.num_new_tokens = 1
+        chunked.block_table = [3, 4]
+
+        self.runner.prepare_model_input([chunked], num_prefill_seqs=1)
+        context = get_context()
+
+        self.assertEqual(context.max_seqlen_q, 1)
+        self.assertIs(context.batch_type, BatchType.PURE_PREFILL)
+
+    def test_normal_decode_is_pure_decode(self):
+        decode = Sequence(list(range(17)), block_size=16)
+        decode.num_cached_tokens = 16
+        decode.num_new_tokens = 1
+        decode.block_table = [3, 4]
+
+        self.runner.prepare_model_input([decode], num_prefill_seqs=0)
+        context = get_context()
+
+        self.assertEqual(context.max_seqlen_q, 1)
+        self.assertIs(context.batch_type, BatchType.PURE_DECODE)
+
+    def test_all_single_token_mixed_batch_is_still_mixed(self):
+        prefill = Sequence([7], block_size=16)
+        prefill.num_new_tokens = 1
+        prefill.block_table = [2]
+
+        decode = Sequence(list(range(100, 117)), block_size=16)
+        decode.num_cached_tokens = 16
+        decode.num_new_tokens = 1
+        decode.block_table = [4, 5]
+
+        self.runner.prepare_model_input(
+            [prefill, decode],
+            num_prefill_seqs=1,
+        )
+        context = get_context()
+
+        self.assertEqual(context.max_seqlen_q, 1)
+        self.assertIs(context.batch_type, BatchType.MIXED)
+
+    def test_empty_execution_batch_is_rejected(self):
+        with self.assertRaisesRegex(ValueError, "empty execution batch"):
+            self.runner.prepare_model_input([])
 
 
 if __name__ == "__main__":
