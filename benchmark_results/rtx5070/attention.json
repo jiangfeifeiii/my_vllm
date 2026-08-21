@@ -1,0 +1,470 @@
+{
+  "benchmark": "targeted_flashinfer_attention",
+  "cases": [
+    {
+      "allocated_kv_cache_bytes": 4311744512,
+      "allocated_kv_pages": 65792,
+      "attention_shape": {
+        "block_size": 16,
+        "dtype": "bf16",
+        "head_dim": 128,
+        "num_kv_heads": 8,
+        "num_q_heads": 32
+      },
+      "case": {
+        "decode_batch": 128,
+        "decode_kv_len": 8192,
+        "name": "case1",
+        "prefill_kv_len": 4096,
+        "prefill_q_len": 16
+      },
+      "correctness": {
+        "decode_wrapper_vs_prefill_wrapper": {
+          "max_abs_diff": 1.52587890625e-05,
+          "max_rel_diff": 0.263005793094635
+        },
+        "old_split_cat_vs_unified": {
+          "max_abs_diff": 1.52587890625e-05,
+          "max_rel_diff": 0.7987022399902344
+        },
+        "zero_copy_split_vs_unified": {
+          "max_abs_diff": 1.52587890625e-05,
+          "max_rel_diff": 0.7987022399902344
+        }
+      },
+      "memory_before_case": {
+        "free_bytes": 11552161792,
+        "total_bytes": 12820480000
+      },
+      "mixed": {
+        "execution_order_by_repeat": [
+          [
+            "unified",
+            "old_split_cat",
+            "zero_copy_split"
+          ],
+          [
+            "old_split_cat",
+            "zero_copy_split",
+            "unified"
+          ],
+          [
+            "zero_copy_split",
+            "unified",
+            "old_split_cat"
+          ],
+          [
+            "unified",
+            "old_split_cat",
+            "zero_copy_split"
+          ],
+          [
+            "old_split_cat",
+            "zero_copy_split",
+            "unified"
+          ]
+        ],
+        "methods": {
+          "old_split_cat": {
+            "max_ms": 7.2712421875,
+            "median_ms": 7.2678291015625,
+            "min_ms": 7.26581298828125,
+            "raw_ms": [
+              7.26907177734375,
+              7.2678291015625,
+              7.2663603515625,
+              7.26581298828125,
+              7.2712421875
+            ],
+            "relative_speed_vs_unified": 0.9914294144907922
+          },
+          "unified": {
+            "max_ms": 7.2085029296875,
+            "median_ms": 7.20553955078125,
+            "min_ms": 7.2043173828125,
+            "raw_ms": [
+              7.2043173828125,
+              7.20553955078125,
+              7.2085029296875,
+              7.2060693359375,
+              7.2048515625
+            ],
+            "relative_speed_vs_unified": 1.0
+          },
+          "zero_copy_split": {
+            "max_ms": 7.26330908203125,
+            "median_ms": 7.262337890625,
+            "min_ms": 7.2596357421875,
+            "raw_ms": [
+              7.26330908203125,
+              7.262337890625,
+              7.26239306640625,
+              7.2614208984375,
+              7.2596357421875
+            ],
+            "relative_speed_vs_unified": 0.9921790557394649
+          }
+        }
+      },
+      "peak_torch_allocated_bytes": 4567211520,
+      "pure_decode_diagnostic": {
+        "decode_wrapper_speedup": 0.9937521704429836,
+        "execution_order_by_repeat": [
+          [
+            "prefill_wrapper",
+            "decode_wrapper"
+          ],
+          [
+            "decode_wrapper",
+            "prefill_wrapper"
+          ],
+          [
+            "prefill_wrapper",
+            "decode_wrapper"
+          ],
+          [
+            "decode_wrapper",
+            "prefill_wrapper"
+          ],
+          [
+            "prefill_wrapper",
+            "decode_wrapper"
+          ]
+        ],
+        "methods": {
+          "decode_wrapper": {
+            "max_ms": 7.21534423828125,
+            "median_ms": 7.2130517578125,
+            "min_ms": 7.2120791015625,
+            "raw_ms": [
+              7.2130517578125,
+              7.2120791015625,
+              7.214720703125,
+              7.2128740234375,
+              7.21534423828125
+            ]
+          },
+          "prefill_wrapper": {
+            "max_ms": 7.18343408203125,
+            "median_ms": 7.16798583984375,
+            "min_ms": 7.165892578125,
+            "raw_ms": [
+              7.17107421875,
+              7.18343408203125,
+              7.16798583984375,
+              7.1672529296875,
+              7.165892578125
+            ]
+          }
+        }
+      },
+      "resolved_wrapper_backends": {
+        "diagnostic_prefill": "fa2",
+        "requested_prefill_backend": "auto",
+        "split_decode": "auto",
+        "split_prefill": "fa2",
+        "unified_prefill": "fa2"
+      }
+    },
+    {
+      "allocated_kv_cache_bytes": 4311744512,
+      "allocated_kv_pages": 65792,
+      "attention_shape": {
+        "block_size": 16,
+        "dtype": "bf16",
+        "head_dim": 128,
+        "num_kv_heads": 8,
+        "num_q_heads": 32
+      },
+      "case": {
+        "decode_batch": 64,
+        "decode_kv_len": 16384,
+        "name": "case2",
+        "prefill_kv_len": 4096,
+        "prefill_q_len": 32
+      },
+      "correctness": {
+        "decode_wrapper_vs_prefill_wrapper": {
+          "max_abs_diff": 1.52587890625e-05,
+          "max_rel_diff": 0.19669532775878906
+        },
+        "old_split_cat_vs_unified": {
+          "max_abs_diff": 1.52587890625e-05,
+          "max_rel_diff": 0.7748603820800781
+        },
+        "zero_copy_split_vs_unified": {
+          "max_abs_diff": 1.52587890625e-05,
+          "max_rel_diff": 0.7748603820800781
+        }
+      },
+      "memory_before_case": {
+        "free_bytes": 11516510208,
+        "total_bytes": 12820480000
+      },
+      "mixed": {
+        "execution_order_by_repeat": [
+          [
+            "unified",
+            "old_split_cat",
+            "zero_copy_split"
+          ],
+          [
+            "old_split_cat",
+            "zero_copy_split",
+            "unified"
+          ],
+          [
+            "zero_copy_split",
+            "unified",
+            "old_split_cat"
+          ],
+          [
+            "unified",
+            "old_split_cat",
+            "zero_copy_split"
+          ],
+          [
+            "old_split_cat",
+            "zero_copy_split",
+            "unified"
+          ]
+        ],
+        "methods": {
+          "old_split_cat": {
+            "max_ms": 7.50371142578125,
+            "median_ms": 7.4993349609375,
+            "min_ms": 7.4949443359375,
+            "raw_ms": [
+              7.4949443359375,
+              7.50371142578125,
+              7.49814453125,
+              7.4993349609375,
+              7.50029931640625
+            ],
+            "relative_speed_vs_unified": 0.9636599938093467
+          },
+          "unified": {
+            "max_ms": 7.23005517578125,
+            "median_ms": 7.22680908203125,
+            "min_ms": 7.22009130859375,
+            "raw_ms": [
+              7.22680908203125,
+              7.22009130859375,
+              7.23005517578125,
+              7.2284248046875,
+              7.22555859375
+            ],
+            "relative_speed_vs_unified": 1.0
+          },
+          "zero_copy_split": {
+            "max_ms": 7.50336181640625,
+            "median_ms": 7.500984375,
+            "min_ms": 7.4888251953125,
+            "raw_ms": [
+              7.50113623046875,
+              7.500984375,
+              7.4888251953125,
+              7.4983916015625,
+              7.50336181640625
+            ],
+            "relative_speed_vs_unified": 0.9634480917087965
+          }
+        }
+      },
+      "peak_torch_allocated_bytes": 4561441280,
+      "pure_decode_diagnostic": {
+        "decode_wrapper_speedup": 0.9690391015888574,
+        "execution_order_by_repeat": [
+          [
+            "prefill_wrapper",
+            "decode_wrapper"
+          ],
+          [
+            "decode_wrapper",
+            "prefill_wrapper"
+          ],
+          [
+            "prefill_wrapper",
+            "decode_wrapper"
+          ],
+          [
+            "decode_wrapper",
+            "prefill_wrapper"
+          ],
+          [
+            "prefill_wrapper",
+            "decode_wrapper"
+          ]
+        ],
+        "methods": {
+          "decode_wrapper": {
+            "max_ms": 7.89845166015625,
+            "median_ms": 7.4260439453125,
+            "min_ms": 7.424642578125,
+            "raw_ms": [
+              7.4248056640625,
+              7.4272626953125,
+              7.424642578125,
+              7.4260439453125,
+              7.89845166015625
+            ]
+          },
+          "prefill_wrapper": {
+            "max_ms": 7.23539013671875,
+            "median_ms": 7.196126953125,
+            "min_ms": 7.19044091796875,
+            "raw_ms": [
+              7.19044091796875,
+              7.19771728515625,
+              7.1925537109375,
+              7.196126953125,
+              7.23539013671875
+            ]
+          }
+        }
+      },
+      "resolved_wrapper_backends": {
+        "diagnostic_prefill": "fa2",
+        "requested_prefill_backend": "auto",
+        "split_decode": "auto",
+        "split_prefill": "fa2",
+        "unified_prefill": "fa2"
+      }
+    }
+  ],
+  "elapsed_seconds": 205.5456819289975,
+  "environment": {
+    "benchmark_script": {
+      "path": "/workspace/aiinfra/nano-vllm-v1/bench_attention.py",
+      "sha256": "8c41c805e5169fc0894472db589d79eaa358c939d83c0a222cb2ed8acb5b7b34"
+    },
+    "command": [
+      "/tmp/nanovllm-flashinfer-env/bin/python",
+      "bench_attention.py",
+      "--output",
+      "benchmark_results/rtx5070/attention.json",
+      "--case",
+      "case1",
+      "--case",
+      "case2",
+      "--warmup",
+      "50",
+      "--iters",
+      "500",
+      "--repeats",
+      "5",
+      "--workspace-mib",
+      "64",
+      "--seed",
+      "2026",
+      "--device",
+      "0",
+      "--backend",
+      "auto"
+    ],
+    "cudnn": 91900,
+    "cwd": "/workspace/aiinfra/nano-vllm-v1",
+    "flashinfer_cubin": "0.6.17",
+    "flashinfer_env": {
+      "FLASHINFER_CUDA_ARCH_LIST": "12.0f",
+      "FLASHINFER_DISABLE_JIT": "1"
+    },
+    "flashinfer_jit_cache": "0.6.17+cu129",
+    "flashinfer_python": "0.6.17",
+    "git": {
+      "branch": "dev-from-318567e",
+      "commit": "bf167478746536daeca203e44686f6d063874899",
+      "dirty": true,
+      "status_porcelain": [
+        "M bench_attention.py",
+        "?? bench_scheduler.py",
+        "?? benchmark_results/"
+      ]
+    },
+    "gpu": {
+      "compute_capability": "12.0",
+      "index": 0,
+      "multiprocessor_count": 48,
+      "name": "NVIDIA GeForce RTX 5070",
+      "total_memory_bytes": 12820480000,
+      "uuid": "d579820b-3886-c645-9f70-5649b0bdf393"
+    },
+    "host": "7d4488b3d310",
+    "nvidia_driver": "596.49",
+    "platform": "Linux-6.6.114.1-microsoft-standard-WSL2-x86_64-with-glibc2.35",
+    "python": "3.10.12",
+    "timestamp_utc": "2026-08-21T07:29:59.055058+00:00",
+    "torch": "2.11.0+cu128",
+    "torch_cuda": "12.8"
+  },
+  "finished_at_utc": "2026-08-21T07:33:05.503306+00:00",
+  "protocol": {
+    "case_defaults": {
+      "case1": {
+        "decode_batch": 128,
+        "decode_kv_len": 8192,
+        "name": "case1",
+        "prefill_kv_len": 4096,
+        "prefill_q_len": 16
+      },
+      "case2": {
+        "decode_batch": 64,
+        "decode_kv_len": 16384,
+        "name": "case2",
+        "prefill_kv_len": 4096,
+        "prefill_q_len": 32
+      }
+    },
+    "cuda_event_coverage": "GPU work, stream gaps, and torch.cat copy are covered; host-only allocator latency is not directly measured",
+    "decode_batch_adjusted": false,
+    "decode_batch_adjustments": {},
+    "decode_batch_reduction_policy": "only explicit --case1-decode-batch/--case2-decode-batch; KV lengths are fixed and never silently reduced",
+    "independent_repeats": 5,
+    "iterations_per_repeat": 500,
+    "method_contracts": {
+      "old_split_cat": {
+        "allocation_in_timed_region": true,
+        "calls": "phase outputs from run(), then torch.cat",
+        "final_output_preallocated": false,
+        "timing_qualification": "tensor allocation APIs are invoked in the timed loop; CUDA events capture device-side work, not host allocator overhead"
+      },
+      "unified": {
+        "allocation_in_timed_region": false,
+        "calls": "one BatchPrefill wrapper over packed [P|D]",
+        "final_output_preallocated": true
+      },
+      "zero_copy_split": {
+        "allocation_in_timed_region": false,
+        "calls": "prefill/decode out slices; decode slice zeroed",
+        "final_output_preallocated": true
+      }
+    },
+    "planning_in_timed_region": false,
+    "protocol_compliant": true,
+    "requested_prefill_backend": "auto",
+    "seed": 2026,
+    "selected_cases": [
+      {
+        "decode_batch": 128,
+        "decode_kv_len": 8192,
+        "name": "case1",
+        "prefill_kv_len": 4096,
+        "prefill_q_len": 16
+      },
+      {
+        "decode_batch": 64,
+        "decode_kv_len": 16384,
+        "name": "case2",
+        "prefill_kv_len": 4096,
+        "prefill_q_len": 32
+      }
+    ],
+    "timing": "CUDA events; per-call milliseconds",
+    "warmup": 50,
+    "warmup_scope": "once per method before all timed repeats",
+    "workspace_mib_per_wrapper_group": 64
+  },
+  "schema_version": 1,
+  "started_at_utc": "2026-08-21T07:29:59.024735+00:00",
+  "status": "complete"
+}

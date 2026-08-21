@@ -205,36 +205,114 @@ python serving_bench.py \
 `bench.py` is the offline throughput harness; set its local model path and
 workload constants, then run `python bench.py`.
 
-`bench_attention.py` is a model-free microbenchmark for the exact mixed
-attention decision in this refactor: one unified paged-prefill wrapper versus
-the phase-specialized prefill/decode wrappers, including the split path's
-output concatenation. Planning occurs once outside the timed region, matching
-one batch plan reused across transformer layers.
+### Targeted scheduler and attention experiments
+
+`bench_scheduler.py` runs one real Qwen3-0.6B scheduler variant per process.
+It keeps the physical GPU cache intact while replacing only the idle
+scheduler's `BlockManager` with the recorded logical block limit.
+`bench_attention.py` is model-free and measures the exact Qwen3-8B attention
+shape. Both scripts fail rather than silently changing the requested workload.
+
+These are the exact commands used for the checked-in RTX 5070 results:
 
 ```bash
-FLASHINFER_CUDA_ARCH_LIST=12.0f FLASHINFER_DISABLE_JIT=1 \
-python bench_attention.py \
-  --dtype bf16 \
-  --block-size 16 \
-  --num-prefill 4 \
-  --prefill-q-len 128 \
-  --num-decode 64 \
-  --decode-kv-len 2048 \
-  --warmup 20 \
-  --iters 200 \
-  --flashinfer-cuda-arch-list 12.0f
+PYTHONHASHSEED=0 FLASHINFER_CUDA_ARCH_LIST=12.0f FLASHINFER_DISABLE_JIT=1 \
+/tmp/nanovllm-flashinfer-env/bin/python bench_scheduler.py lpm \
+  --mode fcfs --model /workspace/aiinfra/models/Qwen3-0.6B \
+  --logical-kv-blocks 896 --gpu-memory-utilization 0.5 \
+  --attention-mode unified --enforce-eager --seed 2026 \
+  --output benchmark_results/rtx5070/lpm_fcfs.json
+
+PYTHONHASHSEED=0 FLASHINFER_CUDA_ARCH_LIST=12.0f FLASHINFER_DISABLE_JIT=1 \
+/tmp/nanovllm-flashinfer-env/bin/python bench_scheduler.py lpm \
+  --mode lpm --model /workspace/aiinfra/models/Qwen3-0.6B \
+  --logical-kv-blocks 896 --gpu-memory-utilization 0.5 \
+  --attention-mode unified --enforce-eager --seed 2026 \
+  --output benchmark_results/rtx5070/lpm.json
+
+PYTHONHASHSEED=0 FLASHINFER_CUDA_ARCH_LIST=12.0f FLASHINFER_DISABLE_JIT=1 \
+/tmp/nanovllm-flashinfer-env/bin/python bench_scheduler.py in-batch \
+  --mode off --model /workspace/aiinfra/models/Qwen3-0.6B \
+  --logical-kv-blocks 640 --gpu-memory-utilization 0.5 \
+  --attention-mode unified --enforce-eager --seed 2026 \
+  --output benchmark_results/rtx5070/in_batch_off.json
+
+PYTHONHASHSEED=0 FLASHINFER_CUDA_ARCH_LIST=12.0f FLASHINFER_DISABLE_JIT=1 \
+/tmp/nanovllm-flashinfer-env/bin/python bench_scheduler.py in-batch \
+  --mode on --model /workspace/aiinfra/models/Qwen3-0.6B \
+  --logical-kv-blocks 640 --gpu-memory-utilization 0.5 \
+  --attention-mode unified --enforce-eager --seed 2026 \
+  --output benchmark_results/rtx5070/in_batch_on.json
+
+PYTHONHASHSEED=0 FLASHINFER_CUDA_ARCH_LIST=12.0f FLASHINFER_DISABLE_JIT=1 \
+/tmp/nanovllm-flashinfer-env/bin/python bench_attention.py \
+  --output benchmark_results/rtx5070/attention.json \
+  --case case1 --case case2 --warmup 50 --iters 500 --repeats 5 \
+  --workspace-mib 64 --seed 2026 --device 0 --backend auto
 ```
 
-The following measurements were reproduced on commit `844f634`. They are
-kernel-path microbenchmarks, not end-to-end throughput claims. On this consumer
-SM120 GPU the split path was about 3-4% slower for both sampled workloads; the
-phase split is retained for explicit execution semantics and future
-backend-specific tuning, not presented as a speedup.
+The runs used RTX 5070 SM120, driver 596.49, Torch 2.11.0+cu128,
+CUDA 12.8, FlashInfer/cubin 0.6.17, and the
+`flashinfer-jit-cache 0.6.17+cu129` AOT cache with JIT disabled. They were
+captured from the Stage-3 worktree based on `bf16747`; the raw JSON records
+the dirty state and exact script hashes
+(`bench_scheduler.py=1b52cff92b4b9f339646c713b40b82c0072cf51ddc2dac7836179c9d659ae21e`,
+`bench_attention.py=8c41c805e5169fc0894472db589d79eaa358c939d83c0a222cb2ed8acb5b7b34`).
 
-| Commit | GPU / software | Dtype / layout | Workload | Unified | Split | Unified / split | Max abs diff |
-|---|---|---|---|---:|---:|---:|---:|
-| `844f634` | RTX 5070; Torch 2.11.0+cu128; CUDA 12.8; FlashInfer 0.6.17 + cu129 AOT cache | BF16; B16; Q16/KV4/HD128 | P=4x128, D=64x1, decode KV=2048; warmup=20, iters=200 | 0.4726 ms | 0.4926 ms | 0.960x | 0.003906 |
-| `844f634` | same | BF16; B16; Q16/KV4/HD128 | P=2x64, D=128x1, decode KV=4096; warmup=20, iters=100 | 1.7651 ms | 1.8252 ms | 0.967x | 0.007812 |
+#### Scheduler LPM
 
-Always record the commit, hardware, software versions, dtype, backend, block
-size, workload, warmup, and exact command when comparing runs.
+The measured phase contains 12 cold requests followed by 12 followers of three
+resident 4096-token prefixes. The first FCFS step scheduled `Cold1..Cold4`
+and directly recorded 103 evictions; the first LPM step scheduled
+`A1,B1,C1,A2`, claimed 16,384 cached tokens, and recorded no eviction.
+
+| Policy | Persistent hit tokens | Computed prompt tokens | Cached-block evictions | Preemptions | P95 TTFT (ms) | Throughput (req/s) | Completion (s) |
+|---|---:|---:|---:|---:|---:|---:|---:|
+| FCFS | 40,528 | 19,983 | 1,242 | 0 | 6,787.689 | 3.192 | 7.519 |
+| LPM | 49,152 | 11,359 | 704 | 0 | 5,433.597 | 3.609 | 6.651 |
+| LPM vs FCFS | +21.3% | -43.2% | -43.3% | unchanged | -19.9% | +13.1% | -11.6% |
+
+Raw request/step traces:
+[`lpm_fcfs.json`](benchmark_results/rtx5070/lpm_fcfs.json) and
+[`lpm.json`](benchmark_results/rtx5070/lpm.json). The total eviction counter
+includes all measured phase-2 steps; only the per-step trace supports direct
+request attribution.
+
+#### In-batch Prefix Burst
+
+All 16 requests arrive together in four groups with 2048 shared tokens.
+Temporary OFF admits `A1..A4` first. Temporary ON marks 12 followers and
+admits `A1,B1,C1,D1`; followers later receive ordinary persistent hits.
+
+| Policy | Temporary followers | Later persistent hit tokens | Computed prompt tokens | Duplicate prefill tokens | P95 TTFT (ms) | Throughput (req/s) | Completion (s) |
+|---|---:|---:|---:|---:|---:|---:|---:|
+| LPM | 0 | 0 | 34,816 | 24,576 | 3,601.997 | 3.695 | 4.330 |
+| LPM + Temporary Deprioritization | 12 | 24,576 | 10,240 | 0 | 3,184.553 | 3.894 | 4.108 |
+| Temporary ON vs OFF | +12 | +24,576 | -70.6% | -100.0% | -11.6% | +5.4% | -5.1% |
+
+Raw request/step traces:
+[`in_batch_off.json`](benchmark_results/rtx5070/in_batch_off.json) and
+[`in_batch_on.json`](benchmark_results/rtx5070/in_batch_on.json).
+
+#### Attention
+
+Planning and caller-owned outputs are outside timed regions for Unified and
+Zero-copy Split. Old Split exactly retains phase-output allocation plus
+`torch.cat`; CUDA Events capture device work and the cat copy, not host-only
+allocator latency. Each raw value below is the per-call mean of 500 iterations.
+
+| Case | Method | Raw repeats (ms) | Median (ms) | Min / max (ms) | Latency vs Unified | Max abs diff vs Unified |
+|---|---|---|---:|---:|---:|---:|
+| P16/KV4096 + D128/KV8192 | Unified | 7.204317, 7.205540, 7.208503, 7.206069, 7.204852 | 7.205540 | 7.204317 / 7.208503 | baseline | 0 |
+| same | Old Split + Cat | 7.269072, 7.267829, 7.266360, 7.265813, 7.271242 | 7.267829 | 7.265813 / 7.271242 | +0.86% | 0.00001526 |
+| same | Zero-copy Split | 7.263309, 7.262338, 7.262393, 7.261421, 7.259636 | 7.262338 | 7.259636 / 7.263309 | +0.79% | 0.00001526 |
+| P32/KV4096 + D64/KV16384 | Unified | 7.226809, 7.220091, 7.230055, 7.228425, 7.225559 | 7.226809 | 7.220091 / 7.230055 | baseline | 0 |
+| same | Old Split + Cat | 7.494944, 7.503711, 7.498145, 7.499335, 7.500299 | 7.499335 | 7.494944 / 7.503711 | +3.77% | 0.00001526 |
+| same | Zero-copy Split | 7.501136, 7.500984, 7.488825, 7.498392, 7.503362 | 7.500984 | 7.488825 / 7.503362 | +3.79% | 0.00001526 |
+
+The pure-decode diagnostic also favored the paged-prefill wrapper on this
+stack: 7.167986 vs 7.213052 ms in Case 1 and 7.196127 vs 7.426044 ms in Case 2.
+Unified therefore remains the default; Split is retained as an explicit
+phase-specialized path, not presented as a speedup. Full metadata, correctness,
+execution order, and diagnostic repeats are in
+[`attention.json`](benchmark_results/rtx5070/attention.json).
