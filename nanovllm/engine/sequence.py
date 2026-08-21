@@ -2,7 +2,18 @@ from copy import copy
 from enum import Enum, auto
 from itertools import count
 
+import numpy as np
+import xxhash
+
 from nanovllm.sampling_params import SamplingParams
+
+
+def compute_block_hash(token_ids: list[int], prefix: int = -1) -> int:
+    h = xxhash.xxh64()
+    if prefix != -1:
+        h.update(prefix.to_bytes(8, "little"))
+    h.update(np.array(token_ids).tobytes())
+    return h.intdigest()
 
 
 class SequenceStatus(Enum):
@@ -22,12 +33,13 @@ class Sequence:
     ):
         assert block_size > 0
         self.seq_id = next(Sequence.counter)
-        self.block_size = block_size
+        self._block_size = block_size
         self.status = SequenceStatus.WAITING
         self.token_ids = copy(token_ids)
         self.last_token = token_ids[-1]
         self.num_tokens = len(self.token_ids)
         self.num_prompt_tokens = len(token_ids)
+        self.block_hashes = self._build_block_hashes()
         self.num_cached_tokens = 0
         self.num_new_tokens = 0
         self.block_table = []
@@ -40,6 +52,22 @@ class Sequence:
 
     def __getitem__(self, key):
         return self.token_ids[key]
+
+    @property
+    def block_size(self) -> int:
+        """The cache page size is immutable for a sequence's lifetime."""
+        return self._block_size
+
+    def _build_block_hashes(self) -> list[int]:
+        block_hashes: list[int] = []
+        prefix_hash = -1
+        for offset in range(0, len(self.token_ids), self.block_size):
+            token_ids = self.token_ids[offset : offset + self.block_size]
+            if len(token_ids) != self.block_size:
+                break
+            prefix_hash = compute_block_hash(token_ids, prefix_hash)
+            block_hashes.append(prefix_hash)
+        return block_hashes
 
     @property
     def is_finished(self):
@@ -83,13 +111,32 @@ class Sequence:
         return self.token_ids[i*self.block_size: (i+1)*self.block_size]
 
     def append_token(self, token_id: int):
+        assert self.num_tokens == len(self.token_ids)
+        next_num_tokens = self.num_tokens + 1
+        next_block_hash = None
+        if next_num_tokens % self.block_size == 0:
+            block_index = next_num_tokens // self.block_size - 1
+            assert block_index == len(self.block_hashes)
+            block_start = block_index * self.block_size
+            token_ids = self.token_ids[block_start:] + [token_id]
+            assert len(token_ids) == self.block_size
+            prefix_hash = self.block_hashes[-1] if self.block_hashes else -1
+            next_block_hash = compute_block_hash(token_ids, prefix_hash)
+
         self.token_ids.append(token_id)
         self.last_token = token_id
-        self.num_tokens += 1
+        self.num_tokens = next_num_tokens
         assert self.num_tokens == len(self.token_ids)
+        if next_block_hash is not None:
+            self.block_hashes.append(next_block_hash)
 
     def __getstate__(self):
         return self.__dict__.copy()
 
     def __setstate__(self, state):
-        self.__dict__.update(state)
+        restored = state.copy()
+        if "_block_size" not in restored:
+            restored["_block_size"] = restored.pop("block_size")
+        self.__dict__.update(restored)
+        if "block_hashes" not in restored:
+            self.block_hashes = self._build_block_hashes()

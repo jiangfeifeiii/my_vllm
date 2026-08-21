@@ -2,6 +2,8 @@ import pickle
 
 import pytest
 
+import nanovllm.engine.block_manager as block_manager_module
+import nanovllm.engine.sequence as sequence_module
 from nanovllm.engine.block_manager import BlockManager
 from nanovllm.engine.sequence import Sequence, SequenceStatus
 from nanovllm.sampling_params import SamplingParams
@@ -22,6 +24,8 @@ def test_partial_chunk_is_unpublished_until_the_block_is_full(block_size: int):
     prefix_block = manager.blocks[prefix_block_id]
     assert prefix_block.hash == -1
     assert prefix_block.token_ids == []
+    assert prefix_block.parent_block_id == -1
+    assert prefix_block.parent_generation == -1
     assert -1 not in manager.hash_to_block_id
 
     # Mirror scheduler postprocessing, then complete the same physical block.
@@ -34,6 +38,8 @@ def test_partial_chunk_is_unpublished_until_the_block_is_full(block_size: int):
     expected_hash = manager.compute_hash(expected_tokens)
     assert prefix_block.hash == expected_hash
     assert prefix_block.token_ids == expected_tokens
+    assert prefix_block.parent_block_id == -1
+    assert prefix_block.parent_generation == -1
     assert manager.hash_to_block_id[expected_hash] == prefix_block_id
 
     # A full block becomes visible immediately to a later request in this batch.
@@ -48,6 +54,115 @@ def test_partial_chunk_is_unpublished_until_the_block_is_full(block_size: int):
     manager.deallocate(seq)
     assert prefix_block.ref_count == 0
     assert prefix_block_id in manager.free_block_ids
+
+
+def test_sequence_caches_only_chained_full_block_hashes():
+    tokens = list(range(2 * 16 + 3))
+    seq = Sequence(tokens, block_size=16)
+    first_hash = BlockManager.compute_hash(tokens[:16])
+    second_hash = BlockManager.compute_hash(tokens[16:32], first_hash)
+
+    assert seq.block_hashes == [first_hash, second_hash]
+
+    for token_id in range(12):
+        seq.append_token(100_000 + token_id)
+        assert seq.block_hashes == [first_hash, second_hash]
+
+    seq.append_token(100_012)
+    expected_third = BlockManager.compute_hash(seq.block(2), second_hash)
+    assert seq.block_hashes == [first_hash, second_hash, expected_third]
+
+    with pytest.raises(AttributeError):
+        seq.block_size = 32
+
+
+def test_sequence_pickle_preserves_hash_cache_and_continues_incrementally():
+    seq = Sequence(list(range(31)), block_size=16)
+    restored = pickle.loads(pickle.dumps(seq))
+
+    assert restored.block_hashes == seq.block_hashes
+    restored.append_token(99_001)
+
+    expected_second = BlockManager.compute_hash(
+        restored.block(1), restored.block_hashes[0]
+    )
+    assert restored.block_hashes == [seq.block_hashes[0], expected_second]
+
+
+def test_sequence_legacy_pickle_state_rebuilds_hashes_before_boundary_append():
+    original = Sequence(list(range(31)), block_size=16)
+    legacy_state = original.__getstate__()
+    legacy_state["block_size"] = legacy_state.pop("_block_size")
+    legacy_state.pop("block_hashes")
+    restored = Sequence.__new__(Sequence)
+
+    restored.__setstate__(legacy_state)
+    restored.append_token(99_002)
+
+    assert restored.block_size == 16
+    assert restored.block_hashes == Sequence(
+        restored.token_ids,
+        block_size=16,
+    ).block_hashes
+
+
+def test_sequence_boundary_hash_failure_is_atomic(monkeypatch):
+    seq = Sequence(list(range(15)), block_size=16)
+    state_before = pickle.dumps(seq.__dict__)
+
+    def fail_hash(*_args, **_kwargs):
+        raise RuntimeError("injected block hash failure")
+
+    monkeypatch.setattr(sequence_module, "compute_block_hash", fail_hash)
+    with pytest.raises(RuntimeError, match="injected block hash failure"):
+        seq.append_token(99_003)
+
+    assert pickle.dumps(seq.__dict__) == state_before
+
+
+def test_block_manager_hot_paths_do_not_rehash_cached_sequence_blocks(
+    monkeypatch,
+):
+    manager = BlockManager(num_blocks=4, block_size=16)
+    prefix = list(range(32))
+    leader = Sequence(prefix + [91_001], block_size=16)
+    follower = Sequence(prefix + [91_002], block_size=16)
+
+    def fail_rehash(*_args, **_kwargs):
+        raise AssertionError("full block hash was recomputed")
+
+    monkeypatch.setattr(sequence_module, "compute_block_hash", fail_rehash)
+    monkeypatch.setattr(block_manager_module, "compute_block_hash", fail_rehash)
+
+    leader.num_new_tokens = len(leader)
+    manager.allocate_new(leader)
+    latest = manager.match_prefix(follower)
+    manager.claim_prefix(follower, latest)
+    follower.num_new_tokens = 1
+    manager.allocate_new(follower)
+
+    assert latest == leader.block_table[:2]
+    assert follower.block_table[:2] == leader.block_table[:2]
+
+    manager.deallocate(leader)
+    manager.deallocate(follower)
+
+
+def test_hash_collision_candidate_never_reuses_different_tokens():
+    manager = BlockManager(num_blocks=3, block_size=16)
+    source = Sequence(list(range(16)) + [92_001], block_size=16)
+    source.num_new_tokens = len(source)
+    manager.allocate_new(source)
+    source_block_id = source.block_table[0]
+    manager.deallocate(source)
+
+    target = Sequence(list(range(100, 116)) + [92_002], block_size=16)
+    target.block_hashes[0] = source.block_hashes[0]
+
+    assert manager.hash_to_block_id[target.block_hashes[0]] == source_block_id
+    assert manager.match_prefix(target) == []
+    assert target.block_table == []
+    assert target.num_cached_tokens == 0
 
 
 @pytest.mark.parametrize(

@@ -21,7 +21,7 @@ def test_flashinfer_defaults_to_block_size_16(tmp_path):
 
     assert config.attention_backend == "flashinfer"
     assert config.enable_lpm is True
-    assert config.enable_in_batch_prefix_deprioritization is True
+    assert config.enable_same_step_prefix_reuse is True
     assert config.kvcache_block_size == 16
     assert config.attention_mode == "unified"
 

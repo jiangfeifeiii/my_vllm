@@ -1,8 +1,6 @@
 from collections import deque
-import xxhash
-import numpy as np
 
-from nanovllm.engine.sequence import Sequence
+from nanovllm.engine.sequence import Sequence, compute_block_hash
 
 
 class Block:
@@ -10,16 +8,39 @@ class Block:
     def __init__(self, block_id):
         self.block_id = block_id
         self.ref_count = 0
+        self.generation = 0
         self.hash = -1
+        self.lineage_block_id = -1
+        self.lineage_generation = -1
+        self.parent_block_id = -1
+        self.parent_generation = -1
         self.token_ids = []
 
-    def update(self, hash: int, token_ids: list[int]):
+    def update(
+        self,
+        hash: int,
+        token_ids: list[int],
+        *,
+        lineage_block_id: int,
+        lineage_generation: int,
+        parent_block_id: int,
+        parent_generation: int,
+    ):
         self.hash = hash
+        self.lineage_block_id = lineage_block_id
+        self.lineage_generation = lineage_generation
+        self.parent_block_id = parent_block_id
+        self.parent_generation = parent_generation
         self.token_ids = token_ids
 
     def reset(self):
         self.ref_count = 1
+        self.generation += 1
         self.hash = -1
+        self.lineage_block_id = self.block_id
+        self.lineage_generation = self.generation
+        self.parent_block_id = -1
+        self.parent_generation = -1
         self.token_ids = []
 
 
@@ -53,13 +74,67 @@ class BlockManager:
             f"manager block size {self.block_size}"
         )
 
+    def _lineage(self, block_id: int) -> tuple[int, int]:
+        if block_id == -1:
+            return -1, -1
+        assert 0 <= block_id < len(self.blocks)
+        block = self.blocks[block_id]
+        assert block.hash != -1
+        assert block.lineage_block_id != -1
+        assert block.lineage_generation != -1
+        return block.lineage_block_id, block.lineage_generation
+
+    def _publish_full_block(
+        self,
+        block: Block,
+        block_hash: int,
+        token_ids: list[int],
+        *,
+        parent_block_id: int,
+        parent_generation: int,
+    ) -> None:
+        """Publish a full block while canonicalizing equivalent lineages."""
+        lineage_block_id = block.block_id
+        lineage_generation = block.generation
+        owner_id = self.hash_to_block_id.get(block_hash, -1)
+        if 0 <= owner_id < len(self.blocks):
+            owner = self.blocks[owner_id]
+            owner_is_free = owner_id in self.free_block_ids
+            owner_is_used = owner_id in self.used_block_ids
+            owner_is_resident = (
+                owner_is_free != owner_is_used
+                and (
+                    (owner_is_free and owner.ref_count == 0)
+                    or (owner_is_used and owner.ref_count > 0)
+                )
+            )
+            if (
+                owner_is_resident
+                and owner.hash == block_hash
+                and owner.token_ids == token_ids
+                and owner.parent_block_id == parent_block_id
+                and owner.parent_generation == parent_generation
+            ):
+                # Re-publication of the exact same prefix chain may use a
+                # different physical page. Sharing its immutable lineage keeps
+                # already-published descendants reachable from either page.
+                lineage_block_id = owner.lineage_block_id
+                lineage_generation = owner.lineage_generation
+
+        block.update(
+            block_hash,
+            token_ids,
+            lineage_block_id=lineage_block_id,
+            lineage_generation=lineage_generation,
+            parent_block_id=parent_block_id,
+            parent_generation=parent_generation,
+        )
+        self.hash_to_block_id[block_hash] = block.block_id
+
     @classmethod
     def compute_hash(cls, token_ids: list[int], prefix: int = -1):
-        h = xxhash.xxh64()
-        if prefix != -1:
-            h.update(prefix.to_bytes(8, "little"))
-        h.update(np.array(token_ids).tobytes())
-        return h.intdigest()
+        """Compatibility entry point for tests and external diagnostics."""
+        return compute_block_hash(token_ids, prefix)
 
     def _allocate_block(self, block_id: int) -> Block:
         block = self.blocks[block_id]
@@ -70,6 +145,17 @@ class BlockManager:
         self.free_block_ids.remove(block_id)
         self.used_block_ids.add(block_id)
         return self.blocks[block_id]
+
+    def _claim_cached_free_block(self, block_id: int) -> Block:
+        """Claim a cached block without invalidating descendant lineage."""
+        block = self.blocks[block_id]
+        assert block.ref_count == 0
+        assert block_id in self.free_block_ids
+        assert block_id not in self.used_block_ids
+        block.ref_count = 1
+        self.free_block_ids.remove(block_id)
+        self.used_block_ids.add(block_id)
+        return block
 
     def _deallocate_block(self, block_id: int) -> Block:
         assert self.blocks[block_id].ref_count == 0
@@ -82,21 +168,45 @@ class BlockManager:
         """
         return len(self.free_block_ids) >= (num_tokens + self.block_size - 1) // self.block_size
 
-    def _validate_claimed_prefix(self, seq: Sequence) -> int:
+    def num_blocks_required_for_admission(
+        self,
+        prefix_block_ids: list[int],
+        num_new_tokens: int,
+    ) -> int:
+        """Count free cached blocks to claim plus uncached suffix blocks."""
+        assert num_new_tokens >= 0
+        assert len(set(prefix_block_ids)) == len(prefix_block_ids)
+        cached_free_blocks = sum(
+            block_id in self.free_block_ids
+            for block_id in prefix_block_ids
+        )
+        new_suffix_blocks = (
+            num_new_tokens + self.block_size - 1
+        ) // self.block_size
+        return cached_free_blocks + new_suffix_blocks
+
+    def _validate_claimed_prefix(self, seq: Sequence) -> None:
         assert seq.num_cached_tokens == len(seq.block_table) * self.block_size
-        prefix_hash = -1
+        previous_block_id = -1
         for block_index, block_id in enumerate(seq.block_table):
             assert 0 <= block_id < len(self.blocks)
             token_ids = seq.block(block_index)
             assert len(token_ids) == self.block_size
-            prefix_hash = self.compute_hash(token_ids, prefix_hash)
+            block_hash = seq.block_hashes[block_index]
+            parent_block_id, parent_generation = self._lineage(
+                previous_block_id
+            )
             block = self.blocks[block_id]
             assert block_id in self.used_block_ids
             assert block_id not in self.free_block_ids
             assert block.ref_count > 0
-            assert block.hash == prefix_hash
+            assert block.hash == block_hash
             assert block.token_ids == token_ids
-        return prefix_hash
+            assert block.lineage_block_id != -1
+            assert block.lineage_generation != -1
+            assert block.parent_block_id == parent_block_id
+            assert block.parent_generation == parent_generation
+            previous_block_id = block_id
 
     def match_prefix(
         self,
@@ -107,76 +217,99 @@ class BlockManager:
         if max_blocks is not None:
             assert max_blocks >= 0
 
-        prefix_hash = self._validate_claimed_prefix(seq)
+        self._validate_claimed_prefix(seq)
         start = len(seq.block_table)
         stop = max(start, seq.num_blocks - 1)
         if max_blocks is not None:
             stop = min(stop, start + max_blocks)
 
         matched = []
+        previous_block_id = seq.block_table[-1] if seq.block_table else -1
         for block_index in range(start, stop):
             token_ids = seq.block(block_index)
             if len(token_ids) != self.block_size:
                 break
-            block_hash = self.compute_hash(token_ids, prefix_hash)
+            block_hash = seq.block_hashes[block_index]
             block_id = self.hash_to_block_id.get(block_hash, -1)
             if not 0 <= block_id < len(self.blocks):
                 break
             block = self.blocks[block_id]
+            parent_block_id, parent_generation = self._lineage(
+                previous_block_id
+            )
             is_free = block_id in self.free_block_ids
             is_used = block_id in self.used_block_ids
             if (
                 block.hash != block_hash
                 or block.token_ids != token_ids
+                or block.parent_block_id != parent_block_id
+                or block.parent_generation != parent_generation
+                or block_id in seq.block_table
+                or block_id in matched
                 or is_free == is_used
                 or (is_free and block.ref_count != 0)
                 or (is_used and block.ref_count <= 0)
             ):
                 break
             matched.append(block_id)
-            prefix_hash = block_hash
+            previous_block_id = block_id
         return matched
 
     def claim_prefix(self, seq: Sequence, block_ids: list[int]) -> None:
         self._assert_block_size(seq)
-        prefix_hash = self._validate_claimed_prefix(seq)
+        self._validate_claimed_prefix(seq)
         start = len(seq.block_table)
         planned = list(block_ids)
         assert len(set(planned)) == len(planned)
 
         claims = []
+        previous_block_id = seq.block_table[-1] if seq.block_table else -1
         for offset, block_id in enumerate(planned):
             block_index = start + offset
             assert block_index < seq.num_blocks - 1
             assert 0 <= block_id < len(self.blocks)
             token_ids = seq.block(block_index)
             assert len(token_ids) == self.block_size
-            block_hash = self.compute_hash(token_ids, prefix_hash)
-            assert self.hash_to_block_id.get(block_hash) == block_id, (
-                "prefix plan is stale: hash mapping changed"
+            block_hash = seq.block_hashes[block_index]
+            parent_block_id, parent_generation = self._lineage(
+                previous_block_id
             )
+            if self.hash_to_block_id.get(block_hash) != block_id:
+                raise AssertionError(
+                    "prefix plan is stale: hash mapping changed"
+                )
             block = self.blocks[block_id]
             is_free = block_id in self.free_block_ids
             is_used = block_id in self.used_block_ids
-            assert is_free != is_used, "prefix plan is stale: block state changed"
-            assert block.hash == block_hash, "prefix plan is stale: hash changed"
-            assert block.token_ids == token_ids, (
-                "prefix plan is stale: tokens changed"
-            )
-            assert (is_free and block.ref_count == 0) or (
-                is_used and block.ref_count > 0
-            )
-            claims.append((block_id, block_hash, token_ids, is_free))
-            prefix_hash = block_hash
+            if is_free == is_used:
+                raise AssertionError(
+                    "prefix plan is stale: block state changed"
+                )
+            if block.hash != block_hash:
+                raise AssertionError("prefix plan is stale: hash changed")
+            if block.token_ids != token_ids:
+                raise AssertionError("prefix plan is stale: tokens changed")
+            if (
+                block.parent_block_id != parent_block_id
+                or block.parent_generation != parent_generation
+            ):
+                raise AssertionError("prefix plan is stale: lineage changed")
+            if not (
+                (is_free and block.ref_count == 0)
+                or (is_used and block.ref_count > 0)
+            ):
+                raise AssertionError(
+                    "prefix plan is stale: reference count changed"
+                )
+            claims.append((block_id, is_free))
+            previous_block_id = block_id
 
-        for block_id, block_hash, token_ids, is_free in claims:
+        for block_id, is_free in claims:
             if is_free:
-                block = self._allocate_block(block_id)
+                self._claim_cached_free_block(block_id)
             else:
                 block = self.blocks[block_id]
                 block.ref_count += 1
-            block.update(block_hash, token_ids)
-            self.hash_to_block_id[block_hash] = block_id
             seq.block_table.append(block_id)
             seq.num_cached_tokens += self.block_size
 
@@ -198,7 +331,7 @@ class BlockManager:
     def allocate_new(self, seq: Sequence) -> None:
         """Allocate only the uncached suffix selected for this step."""
         self._assert_block_size(seq)
-        h = self._validate_claimed_prefix(seq)
+        self._validate_claimed_prefix(seq)
         assert seq.num_new_tokens >= 0
         context_end = seq.num_cached_tokens + seq.num_new_tokens
         assert context_end <= len(seq)
@@ -210,27 +343,32 @@ class BlockManager:
         # Hash only tokens committed to this scheduling step. A partial block
         # must remain unpublished until may_append observes it as complete.
         for i in range(seq.num_cached_tokens, context_end, self.block_size):
+            parent_block_id, parent_generation = self._lineage(
+                seq.block_table[-1] if seq.block_table else -1
+            )
             token_ids = seq[i: min(i + self.block_size, context_end)]
             block_hash = (
-                self.compute_hash(token_ids, h)
+                seq.block_hashes[i // self.block_size]
                 if len(token_ids) == self.block_size
                 else -1
             )
             block_id = self.free_block_ids[0]
             block = self._allocate_block(block_id)
             if block_hash != -1:
-                block.update(block_hash, token_ids)
-                self.hash_to_block_id[block_hash] = block_id
+                self._publish_full_block(
+                    block,
+                    block_hash,
+                    token_ids,
+                    parent_block_id=parent_block_id,
+                    parent_generation=parent_generation,
+                )
             seq.block_table.append(block_id)
-            h = block_hash
 
     def allocate(self, seq: Sequence) -> None:
         """Compatibility wrapper for the legacy waiting scheduler."""
         block_ids = self.match_prefix(seq)
         self.claim_prefix(seq, block_ids)
         self.allocate_new(seq)
-
-
 
     def deallocate(self, seq: Sequence):
         """
@@ -274,23 +412,38 @@ class BlockManager:
             seq.num_cached_tokens + seq.num_new_tokens, 
             self.block_size
         ):  
-            token_ids = seq[i: min(i + self.block_size, seq.num_cached_tokens + seq.num_new_tokens)]
-            current_block_id = seq.block_table[i // self.block_size] \
-                    if i // self.block_size < len(seq.block_table) else -1
+            block_index = i // self.block_size
+            parent_block_id, parent_generation = self._lineage(
+                seq.block_table[block_index - 1] if block_index else -1
+            )
+            token_ids = seq[
+                i: min(
+                    i + self.block_size,
+                    seq.num_cached_tokens + seq.num_new_tokens,
+                )
+            ]
+            current_block_id = (
+                seq.block_table[block_index]
+                if block_index < len(seq.block_table)
+                else -1
+            )
             if current_block_id != -1:
                 current_block = self.blocks[current_block_id]
                 assert current_block.hash == -1
-            if len(token_ids) % self.block_size == 0:
-                previous_block_id = seq.block_table[i // self.block_size - 1] if i >= self.block_size else -1
-                prefix = self.blocks[previous_block_id].hash if previous_block_id != -1 else -1
-                h = self.compute_hash(token_ids, prefix)
+            if len(token_ids) == self.block_size:
+                h = seq.block_hashes[block_index]
                 if current_block_id == -1:
                     block_id = self.free_block_ids[0]
                     current_block = self._allocate_block(block_id)
                     seq.block_table.append(block_id)
-                current_block.update(h, token_ids)
-                self.hash_to_block_id[h] = current_block.block_id
+                self._publish_full_block(
+                    current_block,
+                    h,
+                    token_ids,
+                    parent_block_id=parent_block_id,
+                    parent_generation=parent_generation,
+                )
             elif current_block_id == -1:
-                    block_id = self.free_block_ids[0]
-                    self._allocate_block(block_id)
-                    seq.block_table.append(block_id)
+                block_id = self.free_block_ids[0]
+                self._allocate_block(block_id)
+                seq.block_table.append(block_id)

@@ -31,7 +31,7 @@ class Config:
     num_kvcache_blocks: int = -1
     chunked_prefill: bool = False
     enable_lpm: bool = True
-    enable_in_batch_prefix_deprioritization: bool = True
+    enable_same_step_prefix_reuse: bool = True
     attention_backend: str = "flashinfer"
     attention_mode: str = "unified"
     operator_overrides: dict[str, str] = field(default_factory=dict)

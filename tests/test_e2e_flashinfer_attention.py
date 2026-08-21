@@ -57,6 +57,7 @@ def _owned_llm(
     batch_tokens: int,
     chunked_prefill: bool,
     attention_mode: str,
+    same_step_prefix_reuse: bool = True,
 ):
     from nanovllm import LLM
 
@@ -76,6 +77,7 @@ def _owned_llm(
             attention_backend="flashinfer",
             kvcache_block_size=16,
             chunked_prefill=chunked_prefill,
+            enable_same_step_prefix_reuse=same_step_prefix_reuse,
         )
         # LLMEngine owns this registration; this context owns exactly one exit.
         atexit.unregister(llm.exit)
@@ -110,6 +112,197 @@ def _assert_generation(outputs, expected_lengths):
         assert isinstance(output["text"], str)
         assert len(output["token_ids"]) == expected_length
         assert all(type(token_id) is int for token_id in output["token_ids"])
+
+
+def _same_step_logits(attention_mode: str, enabled: bool):
+    from nanovllm.utils.context import reset_context
+
+    shared = list(range(7000, 7032))
+    prompts = [shared + [7100], shared + [7200]]
+    with _owned_llm(
+        batch_tokens=BATCH_TOKENS,
+        chunked_prefill=False,
+        attention_mode=attention_mode,
+        same_step_prefix_reuse=enabled,
+    ) as llm:
+        for prompt in prompts:
+            llm.add_request(prompt, _sampling_params(1))
+        scheduled = llm.scheduler.schedule()
+        cached_tokens = [seq.num_cached_tokens for seq in scheduled]
+        new_tokens = [seq.num_new_tokens for seq in scheduled]
+        prefix_tables = [seq.block_table[:2] for seq in scheduled]
+        try:
+            input_ids, positions = llm.model_runner.prepare_model_input(
+                scheduled,
+                llm.scheduler.num_scheduled_prefill_seqs,
+            )
+            logits = llm.model_runner.run_model(input_ids, positions)
+            torch.cuda.synchronize()
+            logits = logits.float().cpu()
+        finally:
+            reset_context()
+    return logits, cached_tokens, new_tokens, prefix_tables
+
+
+def _same_step_alias_and_private_logits(attention_mode: str):
+    from nanovllm.utils.context import get_context, reset_context
+
+    shared = list(range(7000, 7032))
+    prompts = [shared + [7100], shared + [7200]]
+    with _owned_llm(
+        batch_tokens=BATCH_TOKENS,
+        chunked_prefill=False,
+        attention_mode=attention_mode,
+    ) as llm:
+        for prompt in prompts:
+            llm.add_request(prompt, _sampling_params(1))
+        leader, follower = llm.scheduler.schedule()
+        assert [leader.num_cached_tokens, follower.num_cached_tokens] == [0, 32]
+        assert [leader.num_new_tokens, follower.num_new_tokens] == [33, 1]
+        assert follower.block_table[:2] == leader.block_table[:2]
+
+        used_pages = set(leader.block_table + follower.block_table)
+        private_pages = [
+            block_id
+            for block_id in llm.scheduler.block_manager.free_block_ids
+            if block_id not in used_pages
+        ][:2]
+        assert len(private_pages) == 2
+        device = llm.model_runner.kv_cache.device
+        shared_page_tensor = torch.tensor(
+            leader.block_table[:2], dtype=torch.long, device=device
+        )
+        private_page_tensor = torch.tensor(
+            private_pages, dtype=torch.long, device=device
+        )
+
+        expected_input_ids = prompts[0] + [prompts[1][-1]]
+        expected_positions = list(range(33)) + [32]
+        expected_slots = [
+            leader.block_table[index // 16] * 16 + index % 16
+            for index in range(33)
+        ] + [follower.block_table[2] * 16]
+
+        def run_once():
+            try:
+                input_ids, positions = llm.model_runner.prepare_model_input(
+                    [leader, follower],
+                    llm.scheduler.num_scheduled_prefill_seqs,
+                )
+                context = get_context()
+                metadata = {
+                    "input_ids": input_ids.cpu().tolist(),
+                    "positions": positions.cpu().tolist(),
+                    "q_indptr": context.page_q_indptr.cpu().tolist(),
+                    "kv_indptr": context.page_kv_indptr.cpu().tolist(),
+                    "page_indices": context.page_indices.cpu().tolist(),
+                    "last_page_len": context.page_last_page_len.cpu().tolist(),
+                    "slot_mapping": context.slot_mapping.cpu().tolist(),
+                    "logits_indices": (
+                        context.seq_need_compute_logits.cpu().tolist()
+                    ),
+                }
+                logits = llm.model_runner.run_model(input_ids, positions)
+                torch.cuda.synchronize()
+                return logits.float().cpu(), metadata
+            finally:
+                reset_context()
+
+        # Stale reads become NaNs unless every layer's leader store is visible
+        # before the follower reads the two aliased pages.
+        llm.model_runner.kv_cache.index_fill_(
+            2, shared_page_tensor, float("nan")
+        )
+        torch.cuda.synchronize()
+        alias_logits, alias_metadata = run_once()
+        assert torch.isfinite(alias_logits).all()
+        assert torch.isfinite(
+            llm.model_runner.kv_cache.index_select(2, shared_page_tensor)
+        ).all()
+
+        llm.model_runner.kv_cache.index_copy_(
+            2,
+            private_page_tensor,
+            llm.model_runner.kv_cache.index_select(2, shared_page_tensor),
+        )
+        torch.cuda.synchronize()
+        follower.block_table[:2] = private_pages
+        private_logits, private_metadata = run_once()
+
+    assert alias_metadata["input_ids"] == expected_input_ids
+    assert alias_metadata["positions"] == expected_positions
+    assert alias_metadata["q_indptr"] == [0, 33, 34]
+    assert alias_metadata["kv_indptr"] == [0, 3, 6]
+    assert alias_metadata["last_page_len"] == [1, 1]
+    assert alias_metadata["slot_mapping"] == expected_slots
+    assert alias_metadata["logits_indices"] == [0, 1]
+    for key in alias_metadata.keys() - {"page_indices"}:
+        assert private_metadata[key] == alias_metadata[key]
+    assert (
+        private_metadata["page_indices"][:3]
+        == alias_metadata["page_indices"][:3]
+    )
+    assert private_metadata["page_indices"][3:5] == private_pages
+    assert (
+        private_metadata["page_indices"][5]
+        == alias_metadata["page_indices"][5]
+    )
+    return alias_logits, private_logits
+
+
+@pytest.mark.skipif(
+    BATCH_TOKENS < 34,
+    reason="NANOVLLM_E2E_BATCH_TOKENS must be at least 34",
+)
+@pytest.mark.parametrize("attention_mode", ["unified", "split"])
+def test_same_step_alias_matches_private_prefix_pages(attention_mode):
+    alias_logits, private_logits = _same_step_alias_and_private_logits(
+        attention_mode
+    )
+    assert torch.isfinite(private_logits).all()
+    torch.testing.assert_close(
+        alias_logits,
+        private_logits,
+        rtol=1e-3,
+        atol=1e-3,
+    )
+
+@pytest.mark.skipif(
+    BATCH_TOKENS < 66,
+    reason="NANOVLLM_E2E_BATCH_TOKENS must be at least 66 for cold baseline",
+)
+@pytest.mark.parametrize("attention_mode", ["unified", "split"])
+def test_same_step_logits_match_independent_cold_prefill(attention_mode):
+    cold_logits, cold_cached, cold_new, cold_tables = _same_step_logits(
+        attention_mode, False
+    )
+    reuse_logits, reuse_cached, reuse_new, reuse_tables = _same_step_logits(
+        attention_mode, True
+    )
+
+    assert cold_cached == [0, 0]
+    assert cold_new == [33, 33]
+    assert set(cold_tables[0]).isdisjoint(cold_tables[1])
+    assert reuse_cached == [0, 32]
+    assert reuse_new == [33, 1]
+    assert reuse_tables[0] == reuse_tables[1]
+
+    # OFF packs 66 queries while ON packs 34, so BF16 GEMMs have a different
+    # deterministic rounding path. The tight alias/private test above isolates
+    # KV correctness; this envelope checks both rows against the full cold run.
+    cosine = torch.nn.functional.cosine_similarity(
+        reuse_logits, cold_logits, dim=-1
+    )
+    assert torch.all(cosine > 0.9995)
+    rms = (reuse_logits - cold_logits).square().mean(dim=-1).sqrt()
+    assert rms[1] <= 2 * rms[0]
+    torch.testing.assert_close(
+        reuse_logits,
+        cold_logits,
+        rtol=2e-2,
+        atol=2e-1,
+    )
+
 
 
 @pytest.mark.skipif(
@@ -168,8 +361,8 @@ def test_flashinfer_prefill_decode_prefix_reuse_and_mixed_batch(attention_mode):
         )
         _assert_generation(second_outputs, [2])
 
-        # Temporary matches only deprioritize. With ample budget both requests
-        # run as independent cold prefills in the same GPU batch.
+        # The follower reuses full pages published by the leader while both
+        # requests remain in the same packed GPU prefill batch.
         in_batch_prefix = list(range(6000, 6032))
         llm.add_request(
             in_batch_prefix + [6100],
@@ -182,14 +375,19 @@ def test_flashinfer_prefill_decode_prefix_reuse_and_mixed_batch(attention_mode):
         leader, follower = list(llm.scheduler.waiting)
         in_batch = llm.scheduler.schedule()
         assert in_batch == [leader, follower]
-        assert follower.seq_id in llm.scheduler.temporary_deprioritized
         leader_prefix_ids = leader.block_table[:2]
         follower_prefix_ids = follower.block_table[:2]
-        assert set(leader_prefix_ids).isdisjoint(follower_prefix_ids)
+        tail_ids = [leader.block_table[2], follower.block_table[2]]
+        assert follower_prefix_ids == leader_prefix_ids
+        assert leader.num_cached_tokens == 0
+        assert follower.num_cached_tokens == 32
+        assert [leader.num_new_tokens, follower.num_new_tokens] == [33, 1]
         assert all(
-            block_manager.blocks[block_id].ref_count == 1
-            for block_id in leader_prefix_ids + follower_prefix_ids
+            block_manager.blocks[block_id].ref_count == 2
+            for block_id in leader_prefix_ids
         )
+        assert all(block_manager.blocks[block_id].ref_count == 1 for block_id in tail_ids)
+        assert llm.scheduler.same_step_hit_blocks_by_seq == {follower.seq_id: 2}
 
         token_ids, logits_indices = llm.model_runner.call(
             "run",
@@ -204,11 +402,11 @@ def test_flashinfer_prefill_decode_prefix_reuse_and_mixed_batch(attention_mode):
         assert leader.is_finished and follower.is_finished
         assert all(
             block_manager.blocks[block_id].ref_count == 0
-            for block_id in leader_prefix_ids + follower_prefix_ids
+            for block_id in leader_prefix_ids + tail_ids
         )
         assert all(
             block_id in block_manager.free_block_ids
-            for block_id in leader_prefix_ids + follower_prefix_ids
+            for block_id in leader_prefix_ids + tail_ids
         )
 
         # Keep one request in decode, then admit a fresh prefill in the same step.
