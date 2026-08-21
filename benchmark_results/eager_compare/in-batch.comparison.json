@@ -1,0 +1,284 @@
+{
+  "backend_specific_metrics": {
+    "cross_framework_comparable": false,
+    "nano_vllm": {
+      "actually_computed_prompt_tokens": 10240,
+      "cached_block_eviction_count": 58,
+      "computed_shared_prefix_tokens": 8192,
+      "definition": "nano-vllm SchedulerMetrics; not compared to vLLM backend-native cache counters",
+      "duplicate_prefill_tokens": 0,
+      "output_token_count": 1024,
+      "output_token_throughput_tps": 237.82813224049366,
+      "p95_ttft_ms": 3633.090847999938,
+      "persistent_cache_hit_tokens": 24576,
+      "persistent_hit_tokens_after_first_step": 24576,
+      "preemption_count": 0,
+      "request_count": 16,
+      "request_throughput_rps": 3.7160645662577134,
+      "scheduler_step_count": 256,
+      "temporary_deprioritized_request_count": 12,
+      "temporary_deprioritized_seq_ids": [
+        5,
+        6,
+        7,
+        9,
+        10,
+        11,
+        13,
+        14,
+        15,
+        17,
+        18,
+        19
+      ],
+      "total_batch_completion_s": 4.305630247999943
+    },
+    "vllm": {
+      "definition": "vLLM RequestOutput.num_cached_tokens and a derived prompt-minus-cache count; not definition-equivalent to nano-vllm SchedulerMetrics",
+      "derived_computed_prompt_tokens": 10240,
+      "reported_cached_prompt_tokens": 24576
+    }
+  },
+  "comparable_metrics": [
+    {
+      "lower_is_better": true,
+      "metric": "p95_ttft_ms",
+      "nano_over_vllm_ratio": 1.2404484915693188,
+      "nano_relative_delta_percent": 24.044849156931875,
+      "nano_vllm": 3633.090847999938,
+      "unit": "ms",
+      "vllm": 2928.852646999985
+    },
+    {
+      "lower_is_better": false,
+      "metric": "request_throughput_rps",
+      "nano_over_vllm_ratio": 0.8672397806882284,
+      "nano_relative_delta_percent": -13.276021931177166,
+      "nano_vllm": 3.7160645662577134,
+      "unit": "requests/s",
+      "vllm": 4.284933243385931
+    },
+    {
+      "lower_is_better": true,
+      "metric": "total_batch_completion_s",
+      "nano_over_vllm_ratio": 1.1530836364614352,
+      "nano_relative_delta_percent": 15.308363646143519,
+      "nano_vllm": 4.305630247999943,
+      "unit": "s",
+      "vllm": 3.7340138320000733
+    }
+  ],
+  "comparison_kind": "eager_only_cross_framework",
+  "fairness": {
+    "block_size": 16,
+    "both_eager_only": true,
+    "chunked_prefill_enabled": true,
+    "dtype": "bfloat16",
+    "gpu_uuid": "GPU-d579820b-3886-c645-9f70-5649b0bdf393",
+    "logical_kv_blocks": 640,
+    "max_num_batched_tokens": 8704,
+    "max_num_seqs": 4,
+    "prefix_caching_enabled": true,
+    "same_arrival_order_and_time": true,
+    "same_benchmark_script_sha256": true,
+    "same_gpu": true,
+    "same_ignore_eos": true,
+    "same_input_token_ids": true,
+    "same_model_and_tokenizer_file_hashes": true,
+    "same_model_path": true,
+    "same_output_lengths": true,
+    "same_request_manifest": true,
+    "same_seed": true,
+    "same_trace": true
+  },
+  "inputs": {
+    "nano_result": "/workspace/aiinfra/nano-vllm-v1/benchmark_results/eager_compare/in-batch.nano.json",
+    "vllm_result": "/workspace/aiinfra/nano-vllm-v1/benchmark_results/eager_compare/in-batch.vllm.json"
+  },
+  "interpretation_boundary": "Compare Cache-Aware Scheduler behavior with vLLM's default eager scheduler only for this shared-prefix target workload.  Do not generalize these numbers to all workloads or attribute them to CUDA Graph.",
+  "schema_version": 1,
+  "trace": {
+    "path": "/workspace/aiinfra/nano-vllm-v1/benchmark_results/eager_compare/in-batch.trace.json",
+    "request_manifest": [
+      {
+        "arrival_order": 0,
+        "arrival_time_ms": 0.0,
+        "measured": true,
+        "output_len": 64,
+        "phase": "measured",
+        "prefix_group": "A",
+        "prompt_len": 2176,
+        "prompt_sha256": "9f33d86a3593efc610e29236808c4b6566aa00b5ad2c7744ce73319392a13df3",
+        "request_id": "A1"
+      },
+      {
+        "arrival_order": 1,
+        "arrival_time_ms": 0.0,
+        "measured": true,
+        "output_len": 64,
+        "phase": "measured",
+        "prefix_group": "A",
+        "prompt_len": 2176,
+        "prompt_sha256": "d63b0d3f47d07d5dad8adbec5bde9c594071d486858d2ef6d1e4573041cb29c7",
+        "request_id": "A2"
+      },
+      {
+        "arrival_order": 2,
+        "arrival_time_ms": 0.0,
+        "measured": true,
+        "output_len": 64,
+        "phase": "measured",
+        "prefix_group": "A",
+        "prompt_len": 2176,
+        "prompt_sha256": "e5fe0b6bfa7c6c3a6a5b6aa0315506a551908d2fe333f92f7a3a5393a9a36b19",
+        "request_id": "A3"
+      },
+      {
+        "arrival_order": 3,
+        "arrival_time_ms": 0.0,
+        "measured": true,
+        "output_len": 64,
+        "phase": "measured",
+        "prefix_group": "A",
+        "prompt_len": 2176,
+        "prompt_sha256": "6df564d28305e0aaafd8f6d614ed9b9ebb595ac49c55e5d642d5963f3d4cf0de",
+        "request_id": "A4"
+      },
+      {
+        "arrival_order": 4,
+        "arrival_time_ms": 0.0,
+        "measured": true,
+        "output_len": 64,
+        "phase": "measured",
+        "prefix_group": "B",
+        "prompt_len": 2176,
+        "prompt_sha256": "82e6d00632cd4737deea33921b523a6271190770f4389ac9c732d85ebcd675af",
+        "request_id": "B1"
+      },
+      {
+        "arrival_order": 5,
+        "arrival_time_ms": 0.0,
+        "measured": true,
+        "output_len": 64,
+        "phase": "measured",
+        "prefix_group": "B",
+        "prompt_len": 2176,
+        "prompt_sha256": "cc217edca07d9f9dc64933f1509992dc62bd5a6b6c664ed72fb3a97441f2dcdc",
+        "request_id": "B2"
+      },
+      {
+        "arrival_order": 6,
+        "arrival_time_ms": 0.0,
+        "measured": true,
+        "output_len": 64,
+        "phase": "measured",
+        "prefix_group": "B",
+        "prompt_len": 2176,
+        "prompt_sha256": "c278942c02d95a0d9319b358e842d2e9fad488f56e8e65fc5584a3e0c4f55b03",
+        "request_id": "B3"
+      },
+      {
+        "arrival_order": 7,
+        "arrival_time_ms": 0.0,
+        "measured": true,
+        "output_len": 64,
+        "phase": "measured",
+        "prefix_group": "B",
+        "prompt_len": 2176,
+        "prompt_sha256": "3d67a9cbf04bdf15a7ba23515bfedaacf3f611a05cf814982cdf6804f5b6324c",
+        "request_id": "B4"
+      },
+      {
+        "arrival_order": 8,
+        "arrival_time_ms": 0.0,
+        "measured": true,
+        "output_len": 64,
+        "phase": "measured",
+        "prefix_group": "C",
+        "prompt_len": 2176,
+        "prompt_sha256": "7d77669d5810f5ffbc704e61b6c21c0e24e9531b2922c2b4ec5f250129a10b78",
+        "request_id": "C1"
+      },
+      {
+        "arrival_order": 9,
+        "arrival_time_ms": 0.0,
+        "measured": true,
+        "output_len": 64,
+        "phase": "measured",
+        "prefix_group": "C",
+        "prompt_len": 2176,
+        "prompt_sha256": "4d155a458160fe2b30950e2afbf28df7442d2616bd378ffa0d49334f4b3bbdca",
+        "request_id": "C2"
+      },
+      {
+        "arrival_order": 10,
+        "arrival_time_ms": 0.0,
+        "measured": true,
+        "output_len": 64,
+        "phase": "measured",
+        "prefix_group": "C",
+        "prompt_len": 2176,
+        "prompt_sha256": "5ad6f2acffd0e412d0d2e0d21ce5a936ce8c587bebc583a7f641313d01db6e65",
+        "request_id": "C3"
+      },
+      {
+        "arrival_order": 11,
+        "arrival_time_ms": 0.0,
+        "measured": true,
+        "output_len": 64,
+        "phase": "measured",
+        "prefix_group": "C",
+        "prompt_len": 2176,
+        "prompt_sha256": "58552ba0e636312cb76d279944ac5feb9584c17e282fde2b3820369185dc5adf",
+        "request_id": "C4"
+      },
+      {
+        "arrival_order": 12,
+        "arrival_time_ms": 0.0,
+        "measured": true,
+        "output_len": 64,
+        "phase": "measured",
+        "prefix_group": "D",
+        "prompt_len": 2176,
+        "prompt_sha256": "7da701e09221102a7502f5fc5102eafef9aced46959af40b34694ed1375c63a4",
+        "request_id": "D1"
+      },
+      {
+        "arrival_order": 13,
+        "arrival_time_ms": 0.0,
+        "measured": true,
+        "output_len": 64,
+        "phase": "measured",
+        "prefix_group": "D",
+        "prompt_len": 2176,
+        "prompt_sha256": "dbf903550748b699f7dcac857a5dbfc5b9eb498c6ced1262c5dfb2e8ea201649",
+        "request_id": "D2"
+      },
+      {
+        "arrival_order": 14,
+        "arrival_time_ms": 0.0,
+        "measured": true,
+        "output_len": 64,
+        "phase": "measured",
+        "prefix_group": "D",
+        "prompt_len": 2176,
+        "prompt_sha256": "905fdf8c7159288b739c22a800ea6a5f4175e6b4bc48ab157b2cfd9b77ad2d94",
+        "request_id": "D3"
+      },
+      {
+        "arrival_order": 15,
+        "arrival_time_ms": 0.0,
+        "measured": true,
+        "output_len": 64,
+        "phase": "measured",
+        "prefix_group": "D",
+        "prompt_len": 2176,
+        "prompt_sha256": "ec589fa27a8e72af89536c78abb1f0adc6b4463758450eb8548608cfb4fbc8de",
+        "request_id": "D4"
+      }
+    ],
+    "request_manifest_sha256": "1bc44d69e6ea521d48d05178ac6193109aae4558cd06ac8e0bc40fb6346c928c",
+    "sha256": "68391710ea9ced0a847dc1be385853a12bdf1bced20cb73fecdb97ea63ce3d0f"
+  },
+  "workload": "in_batch_prefix_burst"
+}

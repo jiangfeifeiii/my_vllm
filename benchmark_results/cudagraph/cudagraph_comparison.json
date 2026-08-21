@@ -1,0 +1,1025 @@
+{
+  "benchmark": "nanovllm_internal_cudagraph_ablation_comparison",
+  "capture": {
+    "delta_full_minus_none": {
+      "extra_memory_bytes": 118684160.0,
+      "extra_memory_mib": 113.18603515625,
+      "time_ms": 298.5876280008597
+    },
+    "full_decode_only": {
+      "extra_memory_bytes": 118684160.0,
+      "extra_memory_mib": 113.18603515625,
+      "time_ms": 298.5876280008597
+    },
+    "none": {
+      "extra_memory_bytes": 0.0,
+      "extra_memory_mib": 0.0,
+      "time_ms": 0.0
+    }
+  },
+  "cases": [
+    {
+      "batch_size": 1,
+      "completion_token_sha256_match": {
+        "matched": 4,
+        "mismatches": [
+          {
+            "case": "bs1_kv512",
+            "mismatched_request_indices": [
+              0
+            ],
+            "repeat": 0
+          }
+        ],
+        "rate": 0.8,
+        "total": 5
+      },
+      "delta_full_minus_none": {
+        "capture": {
+          "extra_memory_bytes": 118684160.0,
+          "extra_memory_mib": 113.18603515625,
+          "time_ms": 298.5876280008597
+        },
+        "graph_replay_hit_rate_percentage_points": 100.0,
+        "latency_median_wall_percent": -52.68533434119143,
+        "output_tokens_per_second_wall_percent": 183.21910023626364,
+        "tpot_wall_percent": -64.6916468851927
+      },
+      "full_decode_only": {
+        "capture": {
+          "extra_memory_bytes": 118684160.0,
+          "extra_memory_mib": 113.18603515625,
+          "time_ms": 298.5876280008597
+        },
+        "graph_replay_hit_rate": 1.0,
+        "latency_median_wall_ms": 4.46475900025689,
+        "output_tokens_per_second_wall": 219.18172916735304,
+        "tpot_wall_ms": 4.56242408433809
+      },
+      "kv_length": 512,
+      "name": "bs1_kv512",
+      "none": {
+        "capture": {
+          "extra_memory_bytes": 0.0,
+          "extra_memory_mib": 0.0,
+          "time_ms": 0.0
+        },
+        "graph_replay_hit_rate": 0.0,
+        "latency_median_wall_ms": 9.436311000172282,
+        "output_tokens_per_second_wall": 77.3894588975496,
+        "tpot_wall_ms": 12.921656440624929
+      }
+    },
+    {
+      "batch_size": 1,
+      "completion_token_sha256_match": {
+        "matched": 5,
+        "mismatches": [],
+        "rate": 1.0,
+        "total": 5
+      },
+      "delta_full_minus_none": {
+        "capture": {
+          "extra_memory_bytes": 118684160.0,
+          "extra_memory_mib": 113.18603515625,
+          "time_ms": 298.5876280008597
+        },
+        "graph_replay_hit_rate_percentage_points": 100.0,
+        "latency_median_wall_percent": -41.83609384457952,
+        "output_tokens_per_second_wall_percent": 91.24070317727377,
+        "tpot_wall_percent": -47.709876433939215
+      },
+      "full_decode_only": {
+        "capture": {
+          "extra_memory_bytes": 118684160.0,
+          "extra_memory_mib": 113.18603515625,
+          "time_ms": 298.5876280008597
+        },
+        "graph_replay_hit_rate": 1.0,
+        "latency_median_wall_ms": 5.404401999840047,
+        "output_tokens_per_second_wall": 173.25414834758524,
+        "tpot_wall_ms": 5.771867568756761
+      },
+      "kv_length": 2048,
+      "name": "bs1_kv2048",
+      "none": {
+        "capture": {
+          "extra_memory_bytes": 0.0,
+          "extra_memory_mib": 0.0,
+          "time_ms": 0.0
+        },
+        "graph_replay_hit_rate": 0.0,
+        "latency_median_wall_ms": 9.291676500197354,
+        "output_tokens_per_second_wall": 90.59480825427859,
+        "tpot_wall_ms": 11.038160124951446
+      }
+    },
+    {
+      "batch_size": 1,
+      "completion_token_sha256_match": {
+        "matched": 3,
+        "mismatches": [
+          {
+            "case": "bs1_kv4096",
+            "mismatched_request_indices": [
+              0
+            ],
+            "repeat": 1
+          },
+          {
+            "case": "bs1_kv4096",
+            "mismatched_request_indices": [
+              0
+            ],
+            "repeat": 3
+          }
+        ],
+        "rate": 0.6,
+        "total": 5
+      },
+      "delta_full_minus_none": {
+        "capture": {
+          "extra_memory_bytes": 118684160.0,
+          "extra_memory_mib": 113.18603515625,
+          "time_ms": 298.5876280008597
+        },
+        "graph_replay_hit_rate_percentage_points": 100.0,
+        "latency_median_wall_percent": -30.666109646609623,
+        "output_tokens_per_second_wall_percent": 81.3034647765605,
+        "tpot_wall_percent": -44.843856060202384
+      },
+      "full_decode_only": {
+        "capture": {
+          "extra_memory_bytes": 118684160.0,
+          "extra_memory_mib": 113.18603515625,
+          "time_ms": 298.5876280008597
+        },
+        "graph_replay_hit_rate": 1.0,
+        "latency_median_wall_ms": 6.561372500073048,
+        "output_tokens_per_second_wall": 144.2154007129165,
+        "tpot_wall_ms": 6.9340721937919625
+      },
+      "kv_length": 4096,
+      "name": "bs1_kv4096",
+      "none": {
+        "capture": {
+          "extra_memory_bytes": 0.0,
+          "extra_memory_mib": 0.0,
+          "time_ms": 0.0
+        },
+        "graph_replay_hit_rate": 0.0,
+        "latency_median_wall_ms": 9.463442000196665,
+        "output_tokens_per_second_wall": 79.54365400057216,
+        "tpot_wall_ms": 12.571713137452889
+      }
+    },
+    {
+      "batch_size": 4,
+      "completion_token_sha256_match": {
+        "matched": 0,
+        "mismatches": [
+          {
+            "case": "bs4_kv512",
+            "mismatched_request_indices": [
+              0,
+              1,
+              3
+            ],
+            "repeat": 0
+          },
+          {
+            "case": "bs4_kv512",
+            "mismatched_request_indices": [
+              0,
+              1,
+              2,
+              3
+            ],
+            "repeat": 1
+          },
+          {
+            "case": "bs4_kv512",
+            "mismatched_request_indices": [
+              0,
+              1,
+              2,
+              3
+            ],
+            "repeat": 2
+          },
+          {
+            "case": "bs4_kv512",
+            "mismatched_request_indices": [
+              0,
+              1,
+              2,
+              3
+            ],
+            "repeat": 3
+          },
+          {
+            "case": "bs4_kv512",
+            "mismatched_request_indices": [
+              0,
+              1,
+              2,
+              3
+            ],
+            "repeat": 4
+          }
+        ],
+        "rate": 0.0,
+        "total": 5
+      },
+      "delta_full_minus_none": {
+        "capture": {
+          "extra_memory_bytes": 118684160.0,
+          "extra_memory_mib": 113.18603515625,
+          "time_ms": 298.5876280008597
+        },
+        "graph_replay_hit_rate_percentage_points": 100.0,
+        "latency_median_wall_percent": -49.28695062982413,
+        "output_tokens_per_second_wall_percent": 116.53595791885219,
+        "tpot_wall_percent": -53.81829375540692
+      },
+      "full_decode_only": {
+        "capture": {
+          "extra_memory_bytes": 118684160.0,
+          "extra_memory_mib": 113.18603515625,
+          "time_ms": 298.5876280008597
+        },
+        "graph_replay_hit_rate": 1.0,
+        "latency_median_wall_ms": 4.758890999710275,
+        "output_tokens_per_second_wall": 806.3428765104745,
+        "tpot_wall_ms": 4.960668862494799
+      },
+      "kv_length": 512,
+      "name": "bs4_kv512",
+      "none": {
+        "capture": {
+          "extra_memory_bytes": 0.0,
+          "extra_memory_mib": 0.0,
+          "time_ms": 0.0
+        },
+        "graph_replay_hit_rate": 0.0,
+        "latency_median_wall_ms": 9.383957499721873,
+        "output_tokens_per_second_wall": 372.3828985542693,
+        "tpot_wall_ms": 10.741631840585342
+      }
+    },
+    {
+      "batch_size": 4,
+      "completion_token_sha256_match": {
+        "matched": 0,
+        "mismatches": [
+          {
+            "case": "bs4_kv2048",
+            "mismatched_request_indices": [
+              0,
+              1
+            ],
+            "repeat": 0
+          },
+          {
+            "case": "bs4_kv2048",
+            "mismatched_request_indices": [
+              1,
+              2,
+              3
+            ],
+            "repeat": 1
+          },
+          {
+            "case": "bs4_kv2048",
+            "mismatched_request_indices": [
+              2,
+              3
+            ],
+            "repeat": 2
+          },
+          {
+            "case": "bs4_kv2048",
+            "mismatched_request_indices": [
+              2,
+              3
+            ],
+            "repeat": 3
+          },
+          {
+            "case": "bs4_kv2048",
+            "mismatched_request_indices": [
+              0,
+              1,
+              2,
+              3
+            ],
+            "repeat": 4
+          }
+        ],
+        "rate": 0.0,
+        "total": 5
+      },
+      "delta_full_minus_none": {
+        "capture": {
+          "extra_memory_bytes": 118684160.0,
+          "extra_memory_mib": 113.18603515625,
+          "time_ms": 298.5876280008597
+        },
+        "graph_replay_hit_rate_percentage_points": 100.0,
+        "latency_median_wall_percent": -39.21714567564684,
+        "output_tokens_per_second_wall_percent": 76.81284233987965,
+        "tpot_wall_percent": -43.443022194182966
+      },
+      "full_decode_only": {
+        "capture": {
+          "extra_memory_bytes": 118684160.0,
+          "extra_memory_mib": 113.18603515625,
+          "time_ms": 298.5876280008597
+        },
+        "graph_replay_hit_rate": 1.0,
+        "latency_median_wall_ms": 5.747176000113541,
+        "output_tokens_per_second_wall": 653.1192837955612,
+        "tpot_wall_ms": 6.1244555156207525
+      },
+      "kv_length": 2048,
+      "name": "bs4_kv2048",
+      "none": {
+        "capture": {
+          "extra_memory_bytes": 0.0,
+          "extra_memory_mib": 0.0,
+          "time_ms": 0.0
+        },
+        "graph_replay_hit_rate": 0.0,
+        "latency_median_wall_ms": 9.455258500111086,
+        "output_tokens_per_second_wall": 369.3845283817667,
+        "tpot_wall_ms": 10.828823875010585
+      }
+    },
+    {
+      "batch_size": 4,
+      "completion_token_sha256_match": {
+        "matched": 5,
+        "mismatches": [],
+        "rate": 1.0,
+        "total": 5
+      },
+      "delta_full_minus_none": {
+        "capture": {
+          "extra_memory_bytes": 118684160.0,
+          "extra_memory_mib": 113.18603515625,
+          "time_ms": 298.5876280008597
+        },
+        "graph_replay_hit_rate_percentage_points": 100.0,
+        "latency_median_wall_percent": -24.446238218284925,
+        "output_tokens_per_second_wall_percent": 41.24729542761124,
+        "tpot_wall_percent": -29.20218422783914
+      },
+      "full_decode_only": {
+        "capture": {
+          "extra_memory_bytes": 118684160.0,
+          "extra_memory_mib": 113.18603515625,
+          "time_ms": 298.5876280008597
+        },
+        "graph_replay_hit_rate": 1.0,
+        "latency_median_wall_ms": 6.929684499937139,
+        "output_tokens_per_second_wall": 548.3834100732768,
+        "tpot_wall_ms": 7.294166684337711
+      },
+      "kv_length": 4096,
+      "name": "bs4_kv4096",
+      "none": {
+        "capture": {
+          "extra_memory_bytes": 0.0,
+          "extra_memory_mib": 0.0,
+          "time_ms": 0.0
+        },
+        "graph_replay_hit_rate": 0.0,
+        "latency_median_wall_ms": 9.17185900016193,
+        "output_tokens_per_second_wall": 388.2434763887719,
+        "tpot_wall_ms": 10.302813165608882
+      }
+    },
+    {
+      "batch_size": 8,
+      "completion_token_sha256_match": {
+        "matched": 5,
+        "mismatches": [],
+        "rate": 1.0,
+        "total": 5
+      },
+      "delta_full_minus_none": {
+        "capture": {
+          "extra_memory_bytes": 118684160.0,
+          "extra_memory_mib": 113.18603515625,
+          "time_ms": 298.5876280008597
+        },
+        "graph_replay_hit_rate_percentage_points": 100.0,
+        "latency_median_wall_percent": -46.544478841137234,
+        "output_tokens_per_second_wall_percent": 88.10848584846936,
+        "tpot_wall_percent": -46.83918721213092
+      },
+      "full_decode_only": {
+        "capture": {
+          "extra_memory_bytes": 118684160.0,
+          "extra_memory_mib": 113.18603515625,
+          "time_ms": 298.5876280008597
+        },
+        "graph_replay_hit_rate": 1.0,
+        "latency_median_wall_ms": 4.851068499647226,
+        "output_tokens_per_second_wall": 1528.7447879011602,
+        "tpot_wall_ms": 5.233051365613051
+      },
+      "kv_length": 512,
+      "name": "bs8_kv512",
+      "none": {
+        "capture": {
+          "extra_memory_bytes": 0.0,
+          "extra_memory_mib": 0.0,
+          "time_ms": 0.0
+        },
+        "graph_replay_hit_rate": 0.0,
+        "latency_median_wall_ms": 9.074962500562833,
+        "output_tokens_per_second_wall": 812.693154700442,
+        "tpot_wall_ms": 9.843813687527359
+      }
+    },
+    {
+      "batch_size": 8,
+      "completion_token_sha256_match": {
+        "matched": 5,
+        "mismatches": [],
+        "rate": 1.0,
+        "total": 5
+      },
+      "delta_full_minus_none": {
+        "capture": {
+          "extra_memory_bytes": 118684160.0,
+          "extra_memory_mib": 113.18603515625,
+          "time_ms": 298.5876280008597
+        },
+        "graph_replay_hit_rate_percentage_points": 100.0,
+        "latency_median_wall_percent": -37.080116561287255,
+        "output_tokens_per_second_wall_percent": 69.05336837822361,
+        "tpot_wall_percent": -40.84708222064543
+      },
+      "full_decode_only": {
+        "capture": {
+          "extra_memory_bytes": 118684160.0,
+          "extra_memory_mib": 113.18603515625,
+          "time_ms": 298.5876280008597
+        },
+        "graph_replay_hit_rate": 1.0,
+        "latency_median_wall_ms": 5.794469499960542,
+        "output_tokens_per_second_wall": 1333.0779496272648,
+        "tpot_wall_ms": 6.001149446839804
+      },
+      "kv_length": 2048,
+      "name": "bs8_kv2048",
+      "none": {
+        "capture": {
+          "extra_memory_bytes": 0.0,
+          "extra_memory_mib": 0.0,
+          "time_ms": 0.0
+        },
+        "graph_replay_hit_rate": 0.0,
+        "latency_median_wall_ms": 9.209282000028907,
+        "output_tokens_per_second_wall": 788.5545034777216,
+        "tpot_wall_ms": 10.145145281293821
+      }
+    },
+    {
+      "batch_size": 8,
+      "completion_token_sha256_match": {
+        "matched": 5,
+        "mismatches": [],
+        "rate": 1.0,
+        "total": 5
+      },
+      "delta_full_minus_none": {
+        "capture": {
+          "extra_memory_bytes": 118684160.0,
+          "extra_memory_mib": 113.18603515625,
+          "time_ms": 298.5876280008597
+        },
+        "graph_replay_hit_rate_percentage_points": 100.0,
+        "latency_median_wall_percent": -27.971270748910303,
+        "output_tokens_per_second_wall_percent": 47.00042215194035,
+        "tpot_wall_percent": -31.97298447439864
+      },
+      "full_decode_only": {
+        "capture": {
+          "extra_memory_bytes": 118684160.0,
+          "extra_memory_mib": 113.18603515625,
+          "time_ms": 298.5876280008597
+        },
+        "graph_replay_hit_rate": 1.0,
+        "latency_median_wall_ms": 6.777295500342007,
+        "output_tokens_per_second_wall": 1132.0775284267188,
+        "tpot_wall_ms": 7.066653828132985
+      },
+      "kv_length": 4096,
+      "name": "bs8_kv4096",
+      "none": {
+        "capture": {
+          "extra_memory_bytes": 0.0,
+          "extra_memory_mib": 0.0,
+          "time_ms": 0.0
+        },
+        "graph_replay_hit_rate": 0.0,
+        "latency_median_wall_ms": 9.409156000401708,
+        "output_tokens_per_second_wall": 770.1185560246881,
+        "tpot_wall_ms": 10.38801095937174
+      }
+    },
+    {
+      "batch_size": 16,
+      "completion_token_sha256_match": {
+        "matched": 5,
+        "mismatches": [],
+        "rate": 1.0,
+        "total": 5
+      },
+      "delta_full_minus_none": {
+        "capture": {
+          "extra_memory_bytes": 118684160.0,
+          "extra_memory_mib": 113.18603515625,
+          "time_ms": 298.5876280008597
+        },
+        "graph_replay_hit_rate_percentage_points": 100.0,
+        "latency_median_wall_percent": -46.13483971055019,
+        "output_tokens_per_second_wall_percent": 107.1398015380725,
+        "tpot_wall_percent": -51.72342579384971
+      },
+      "full_decode_only": {
+        "capture": {
+          "extra_memory_bytes": 118684160.0,
+          "extra_memory_mib": 113.18603515625,
+          "time_ms": 298.5876280008597
+        },
+        "graph_replay_hit_rate": 1.0,
+        "latency_median_wall_ms": 5.1300604995958565,
+        "output_tokens_per_second_wall": 2973.098147871177,
+        "tpot_wall_ms": 5.381591593757662
+      },
+      "kv_length": 512,
+      "name": "bs16_kv512",
+      "none": {
+        "capture": {
+          "extra_memory_bytes": 0.0,
+          "extra_memory_mib": 0.0,
+          "time_ms": 0.0
+        },
+        "graph_replay_hit_rate": 0.0,
+        "latency_median_wall_ms": 9.523893500045233,
+        "output_tokens_per_second_wall": 1435.3099335787085,
+        "tpot_wall_ms": 11.147418146899213
+      }
+    },
+    {
+      "batch_size": 16,
+      "completion_token_sha256_match": {
+        "matched": 5,
+        "mismatches": [],
+        "rate": 1.0,
+        "total": 5
+      },
+      "delta_full_minus_none": {
+        "capture": {
+          "extra_memory_bytes": 118684160.0,
+          "extra_memory_mib": 113.18603515625,
+          "time_ms": 298.5876280008597
+        },
+        "graph_replay_hit_rate_percentage_points": 100.0,
+        "latency_median_wall_percent": -26.96450242685538,
+        "output_tokens_per_second_wall_percent": 45.868303220409146,
+        "tpot_wall_percent": -31.445010470233186
+      },
+      "full_decode_only": {
+        "capture": {
+          "extra_memory_bytes": 118684160.0,
+          "extra_memory_mib": 113.18603515625,
+          "time_ms": 298.5876280008597
+        },
+        "graph_replay_hit_rate": 1.0,
+        "latency_median_wall_ms": 6.889549499646819,
+        "output_tokens_per_second_wall": 2252.958784491188,
+        "tpot_wall_ms": 7.101772171839116
+      },
+      "kv_length": 2048,
+      "name": "bs16_kv2048",
+      "none": {
+        "capture": {
+          "extra_memory_bytes": 0.0,
+          "extra_memory_mib": 0.0,
+          "time_ms": 0.0
+        },
+        "graph_replay_hit_rate": 0.0,
+        "latency_median_wall_ms": 9.433151999473921,
+        "output_tokens_per_second_wall": 1544.5156588178957,
+        "tpot_wall_ms": 10.359234565640918
+      }
+    },
+    {
+      "batch_size": 16,
+      "completion_token_sha256_match": {
+        "matched": 5,
+        "mismatches": [],
+        "rate": 1.0,
+        "total": 5
+      },
+      "delta_full_minus_none": {
+        "capture": {
+          "extra_memory_bytes": 118684160.0,
+          "extra_memory_mib": 113.18603515625,
+          "time_ms": 298.5876280008597
+        },
+        "graph_replay_hit_rate_percentage_points": 100.0,
+        "latency_median_wall_percent": -9.049404260196084,
+        "output_tokens_per_second_wall_percent": 25.31937813260689,
+        "tpot_wall_percent": -20.203881083590407
+      },
+      "full_decode_only": {
+        "capture": {
+          "extra_memory_bytes": 118684160.0,
+          "extra_memory_mib": 113.18603515625,
+          "time_ms": 298.5876280008597
+        },
+        "graph_replay_hit_rate": 1.0,
+        "latency_median_wall_ms": 9.340823999991699,
+        "output_tokens_per_second_wall": 1666.262973783753,
+        "tpot_wall_ms": 9.602325834359249
+      },
+      "kv_length": 4096,
+      "name": "bs16_kv4096",
+      "none": {
+        "capture": {
+          "extra_memory_bytes": 0.0,
+          "extra_memory_mib": 0.0,
+          "time_ms": 0.0
+        },
+        "graph_replay_hit_rate": 0.0,
+        "latency_median_wall_ms": 10.270217499964929,
+        "output_tokens_per_second_wall": 1329.6131840205865,
+        "tpot_wall_ms": 12.033575021885667
+      }
+    },
+    {
+      "batch_size": 32,
+      "completion_token_sha256_match": {
+        "matched": 5,
+        "mismatches": [],
+        "rate": 1.0,
+        "total": 5
+      },
+      "delta_full_minus_none": {
+        "capture": {
+          "extra_memory_bytes": 118684160.0,
+          "extra_memory_mib": 113.18603515625,
+          "time_ms": 298.5876280008597
+        },
+        "graph_replay_hit_rate_percentage_points": 100.0,
+        "latency_median_wall_percent": -33.323161827449404,
+        "output_tokens_per_second_wall_percent": 61.41052635837714,
+        "tpot_wall_percent": -38.04617192191565
+      },
+      "full_decode_only": {
+        "capture": {
+          "extra_memory_bytes": 118684160.0,
+          "extra_memory_mib": 113.18603515625,
+          "time_ms": 298.5876280008597
+        },
+        "graph_replay_hit_rate": 1.0,
+        "latency_median_wall_ms": 6.274473500070599,
+        "output_tokens_per_second_wall": 4842.093724952117,
+        "tpot_wall_ms": 6.60871140000836
+      },
+      "kv_length": 512,
+      "name": "bs32_kv512",
+      "none": {
+        "capture": {
+          "extra_memory_bytes": 0.0,
+          "extra_memory_mib": 0.0,
+          "time_ms": 0.0
+        },
+        "graph_replay_hit_rate": 0.0,
+        "latency_median_wall_ms": 9.41027450016918,
+        "output_tokens_per_second_wall": 2999.862421736545,
+        "tpot_wall_ms": 10.66715585625957
+      }
+    },
+    {
+      "batch_size": 32,
+      "completion_token_sha256_match": {
+        "matched": 5,
+        "mismatches": [],
+        "rate": 1.0,
+        "total": 5
+      },
+      "delta_full_minus_none": {
+        "capture": {
+          "extra_memory_bytes": 118684160.0,
+          "extra_memory_mib": 113.18603515625,
+          "time_ms": 298.5876280008597
+        },
+        "graph_replay_hit_rate_percentage_points": 100.0,
+        "latency_median_wall_percent": -8.57790274459451,
+        "output_tokens_per_second_wall_percent": 20.36805572244035,
+        "tpot_wall_percent": -16.921479374401077
+      },
+      "full_decode_only": {
+        "capture": {
+          "extra_memory_bytes": 118684160.0,
+          "extra_memory_mib": 113.18603515625,
+          "time_ms": 298.5876280008597
+        },
+        "graph_replay_hit_rate": 1.0,
+        "latency_median_wall_ms": 9.094960500078741,
+        "output_tokens_per_second_wall": 3440.268447273858,
+        "tpot_wall_ms": 9.301599712475195
+      },
+      "kv_length": 2048,
+      "name": "bs32_kv2048",
+      "none": {
+        "capture": {
+          "extra_memory_bytes": 0.0,
+          "extra_memory_mib": 0.0,
+          "time_ms": 0.0
+        },
+        "graph_replay_hit_rate": 0.0,
+        "latency_median_wall_ms": 9.948317499947734,
+        "output_tokens_per_second_wall": 2858.1241315443835,
+        "tpot_wall_ms": 11.196154724990492
+      }
+    },
+    {
+      "batch_size": 32,
+      "completion_token_sha256_match": {
+        "matched": 5,
+        "mismatches": [],
+        "rate": 1.0,
+        "total": 5
+      },
+      "delta_full_minus_none": {
+        "capture": {
+          "extra_memory_bytes": 118684160.0,
+          "extra_memory_mib": 113.18603515625,
+          "time_ms": 298.5876280008597
+        },
+        "graph_replay_hit_rate_percentage_points": 100.0,
+        "latency_median_wall_percent": -6.2249420070016885,
+        "output_tokens_per_second_wall_percent": 11.799702162776816,
+        "tpot_wall_percent": -10.554323432451389
+      },
+      "full_decode_only": {
+        "capture": {
+          "extra_memory_bytes": 118684160.0,
+          "extra_memory_mib": 113.18603515625,
+          "time_ms": 298.5876280008597
+        },
+        "graph_replay_hit_rate": 1.0,
+        "latency_median_wall_ms": 12.5674134997098,
+        "output_tokens_per_second_wall": 2504.664771816942,
+        "tpot_wall_ms": 12.776160849975327
+      },
+      "kv_length": 4096,
+      "name": "bs32_kv4096",
+      "none": {
+        "capture": {
+          "extra_memory_bytes": 0.0,
+          "extra_memory_mib": 0.0,
+          "time_ms": 0.0
+        },
+        "graph_replay_hit_rate": 0.0,
+        "latency_median_wall_ms": 13.40165900046486,
+        "output_tokens_per_second_wall": 2240.3143509007114,
+        "tpot_wall_ms": 14.28370977810971
+      }
+    }
+  ],
+  "completion_token_sha256_comparison": {
+    "correctness_basis": "CUDA Graph correctness is covered by hidden-state/logit tolerance GPU tests; autoregressive completion hashes are diagnostic because tolerance-level logit differences can cross sampling boundaries and accumulate",
+    "correctness_gate": false,
+    "matched": 62,
+    "mismatches": [
+      {
+        "case": "bs1_kv512",
+        "mismatched_request_indices": [
+          0
+        ],
+        "repeat": 0
+      },
+      {
+        "case": "bs1_kv4096",
+        "mismatched_request_indices": [
+          0
+        ],
+        "repeat": 1
+      },
+      {
+        "case": "bs1_kv4096",
+        "mismatched_request_indices": [
+          0
+        ],
+        "repeat": 3
+      },
+      {
+        "case": "bs4_kv512",
+        "mismatched_request_indices": [
+          0,
+          1,
+          3
+        ],
+        "repeat": 0
+      },
+      {
+        "case": "bs4_kv512",
+        "mismatched_request_indices": [
+          0,
+          1,
+          2,
+          3
+        ],
+        "repeat": 1
+      },
+      {
+        "case": "bs4_kv512",
+        "mismatched_request_indices": [
+          0,
+          1,
+          2,
+          3
+        ],
+        "repeat": 2
+      },
+      {
+        "case": "bs4_kv512",
+        "mismatched_request_indices": [
+          0,
+          1,
+          2,
+          3
+        ],
+        "repeat": 3
+      },
+      {
+        "case": "bs4_kv512",
+        "mismatched_request_indices": [
+          0,
+          1,
+          2,
+          3
+        ],
+        "repeat": 4
+      },
+      {
+        "case": "bs4_kv2048",
+        "mismatched_request_indices": [
+          0,
+          1
+        ],
+        "repeat": 0
+      },
+      {
+        "case": "bs4_kv2048",
+        "mismatched_request_indices": [
+          1,
+          2,
+          3
+        ],
+        "repeat": 1
+      },
+      {
+        "case": "bs4_kv2048",
+        "mismatched_request_indices": [
+          2,
+          3
+        ],
+        "repeat": 2
+      },
+      {
+        "case": "bs4_kv2048",
+        "mismatched_request_indices": [
+          2,
+          3
+        ],
+        "repeat": 3
+      },
+      {
+        "case": "bs4_kv2048",
+        "mismatched_request_indices": [
+          0,
+          1,
+          2,
+          3
+        ],
+        "repeat": 4
+      }
+    ],
+    "rate": 0.8266666666666667,
+    "total": 75,
+    "unit": "case_repeat"
+  },
+  "config": {
+    "attention_backend": "flashinfer",
+    "attention_mode": "unified",
+    "batch_sizes": [
+      1,
+      4,
+      8,
+      16,
+      32
+    ],
+    "block_size": 16,
+    "chunked_prefill": true,
+    "cudagraph_batch_sizes": [
+      1,
+      4,
+      8,
+      16,
+      32
+    ],
+    "decode_steps": 64,
+    "dtype": "bfloat16",
+    "gpu_memory_utilization": 0.9,
+    "ignore_eos": true,
+    "kv_lengths": [
+      512,
+      2048,
+      4096
+    ],
+    "max_model_len": 4161,
+    "max_num_batched_tokens": 512,
+    "max_num_seqs": 32,
+    "prefix_cache": true,
+    "repeats": 5,
+    "seed": 2026,
+    "temperature": 1e-06,
+    "tensor_parallel_size": 1,
+    "warmup_decode_steps": 8
+  },
+  "delta_definition": "relative deltas are (FULL - NONE) / NONE * 100; replay delta is FULL - NONE in percentage points; capture deltas are absolute",
+  "generated_at_utc": "2026-08-21T12:25:03.851794+00:00",
+  "provenance": {
+    "benchmark_script_sha256": "c9947824d05cf9c9a0feb2a3545dd0393ff1a53c877201a5b0b024c982c9fc31",
+    "environment": {
+      "cuda_driver": "596.49",
+      "cudnn": 91900,
+      "python": "3.10.12",
+      "torch": "2.11.0+cu128",
+      "torch_cuda": "12.8",
+      "transformers": "5.14.1"
+    },
+    "flashinfer": {
+      "environment": {
+        "FLASHINFER_CUDA_ARCH_LIST": "12.0f",
+        "FLASHINFER_DISABLE_JIT": "1"
+      },
+      "flashinfer_cubin": "0.6.17",
+      "flashinfer_jit_cache": "0.6.17+cu129",
+      "flashinfer_python": "0.6.17"
+    },
+    "git_commit": "d630509e548b111e7288b36e31a106b2677bd995",
+    "gpu": {
+      "compute_capability": "12.0",
+      "multiprocessor_count": 48,
+      "name": "NVIDIA GeForce RTX 5070",
+      "total_memory_bytes": 12820480000,
+      "uuid": "d579820b-3886-c645-9f70-5649b0bdf393"
+    },
+    "model": {
+      "dtype": "torch.bfloat16",
+      "identity": null,
+      "path": "/workspace/aiinfra/models/Qwen3-0.6B",
+      "shape": {
+        "head_dim": 128,
+        "hidden_size": 1024,
+        "num_attention_heads": 16,
+        "num_hidden_layers": 28,
+        "num_key_value_heads": 8,
+        "vocab_size": 151936
+      },
+      "type": "qwen3"
+    }
+  },
+  "readme_markdown": "| Case | Hash repeats | NONE latency median (ms) | FULL latency median (ms) | Delta latency (%) | NONE TPOT (ms) | FULL TPOT (ms) | Delta TPOT (%) | NONE tok/s | FULL tok/s | Delta tok/s (%) | NONE replay (%) | FULL replay (%) | Delta replay (pp) | NONE capture (ms / MiB) | FULL capture (ms / MiB) | Delta capture (ms / MiB) |\n|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|\n| bs1_kv512 | 4/5 (80.0%) | 9.436 | 4.465 | -52.69 | 12.922 | 4.562 | -64.69 | 77.4 | 219.2 | +183.22 | 0.0 | 100.0 | +100.0 | 0.000 / 0.00 | 298.588 / 113.19 | +298.588 / +113.19 |\n| bs1_kv2048 | 5/5 (100.0%) | 9.292 | 5.404 | -41.84 | 11.038 | 5.772 | -47.71 | 90.6 | 173.3 | +91.24 | 0.0 | 100.0 | +100.0 | 0.000 / 0.00 | 298.588 / 113.19 | +298.588 / +113.19 |\n| bs1_kv4096 | 3/5 (60.0%) | 9.463 | 6.561 | -30.67 | 12.572 | 6.934 | -44.84 | 79.5 | 144.2 | +81.30 | 0.0 | 100.0 | +100.0 | 0.000 / 0.00 | 298.588 / 113.19 | +298.588 / +113.19 |\n| bs4_kv512 | 0/5 (0.0%) | 9.384 | 4.759 | -49.29 | 10.742 | 4.961 | -53.82 | 372.4 | 806.3 | +116.54 | 0.0 | 100.0 | +100.0 | 0.000 / 0.00 | 298.588 / 113.19 | +298.588 / +113.19 |\n| bs4_kv2048 | 0/5 (0.0%) | 9.455 | 5.747 | -39.22 | 10.829 | 6.124 | -43.44 | 369.4 | 653.1 | +76.81 | 0.0 | 100.0 | +100.0 | 0.000 / 0.00 | 298.588 / 113.19 | +298.588 / +113.19 |\n| bs4_kv4096 | 5/5 (100.0%) | 9.172 | 6.930 | -24.45 | 10.303 | 7.294 | -29.20 | 388.2 | 548.4 | +41.25 | 0.0 | 100.0 | +100.0 | 0.000 / 0.00 | 298.588 / 113.19 | +298.588 / +113.19 |\n| bs8_kv512 | 5/5 (100.0%) | 9.075 | 4.851 | -46.54 | 9.844 | 5.233 | -46.84 | 812.7 | 1528.7 | +88.11 | 0.0 | 100.0 | +100.0 | 0.000 / 0.00 | 298.588 / 113.19 | +298.588 / +113.19 |\n| bs8_kv2048 | 5/5 (100.0%) | 9.209 | 5.794 | -37.08 | 10.145 | 6.001 | -40.85 | 788.6 | 1333.1 | +69.05 | 0.0 | 100.0 | +100.0 | 0.000 / 0.00 | 298.588 / 113.19 | +298.588 / +113.19 |\n| bs8_kv4096 | 5/5 (100.0%) | 9.409 | 6.777 | -27.97 | 10.388 | 7.067 | -31.97 | 770.1 | 1132.1 | +47.00 | 0.0 | 100.0 | +100.0 | 0.000 / 0.00 | 298.588 / 113.19 | +298.588 / +113.19 |\n| bs16_kv512 | 5/5 (100.0%) | 9.524 | 5.130 | -46.13 | 11.147 | 5.382 | -51.72 | 1435.3 | 2973.1 | +107.14 | 0.0 | 100.0 | +100.0 | 0.000 / 0.00 | 298.588 / 113.19 | +298.588 / +113.19 |\n| bs16_kv2048 | 5/5 (100.0%) | 9.433 | 6.890 | -26.96 | 10.359 | 7.102 | -31.45 | 1544.5 | 2253.0 | +45.87 | 0.0 | 100.0 | +100.0 | 0.000 / 0.00 | 298.588 / 113.19 | +298.588 / +113.19 |\n| bs16_kv4096 | 5/5 (100.0%) | 10.270 | 9.341 | -9.05 | 12.034 | 9.602 | -20.20 | 1329.6 | 1666.3 | +25.32 | 0.0 | 100.0 | +100.0 | 0.000 / 0.00 | 298.588 / 113.19 | +298.588 / +113.19 |\n| bs32_kv512 | 5/5 (100.0%) | 9.410 | 6.274 | -33.32 | 10.667 | 6.609 | -38.05 | 2999.9 | 4842.1 | +61.41 | 0.0 | 100.0 | +100.0 | 0.000 / 0.00 | 298.588 / 113.19 | +298.588 / +113.19 |\n| bs32_kv2048 | 5/5 (100.0%) | 9.948 | 9.095 | -8.58 | 11.196 | 9.302 | -16.92 | 2858.1 | 3440.3 | +20.37 | 0.0 | 100.0 | +100.0 | 0.000 / 0.00 | 298.588 / 113.19 | +298.588 / +113.19 |\n| bs32_kv4096 | 5/5 (100.0%) | 13.402 | 12.567 | -6.22 | 14.284 | 12.776 | -10.55 | 2240.3 | 2504.7 | +11.80 | 0.0 | 100.0 | +100.0 | 0.000 / 0.00 | 298.588 / 113.19 | +298.588 / +113.19 |\n\nCompletion token SHA-256 diagnostic match: 62/75 (82.67%).\nMismatched case/repeats: bs1_kv512 repeat 0 (requests [0]), bs1_kv4096 repeat 1 (requests [0]), bs1_kv4096 repeat 3 (requests [0]), bs4_kv512 repeat 0 (requests [0, 1, 3]), bs4_kv512 repeat 1 (requests [0, 1, 2, 3]), bs4_kv512 repeat 2 (requests [0, 1, 2, 3]), bs4_kv512 repeat 3 (requests [0, 1, 2, 3]), bs4_kv512 repeat 4 (requests [0, 1, 2, 3]), bs4_kv2048 repeat 0 (requests [0, 1]), bs4_kv2048 repeat 1 (requests [1, 2, 3]), bs4_kv2048 repeat 2 (requests [2, 3]), bs4_kv2048 repeat 3 (requests [2, 3]), bs4_kv2048 repeat 4 (requests [0, 1, 2, 3]).\nCompletion-token SHA-256 equality is diagnostic only, not a correctness gate; CUDA Graph correctness is covered by the hidden-state/logit tolerance GPU tests.\n",
+  "schema_version": 1,
+  "sources": {
+    "full_decode_only": "benchmark_results/cudagraph/cudagraph_full_decode_only.json",
+    "none": "benchmark_results/cudagraph/cudagraph_none.json"
+  },
+  "status": "complete",
+  "validation": {
+    "completion_token_sha256_compared": true,
+    "formal_matrix": true,
+    "raw_steps_recomputed": true,
+    "same_benchmark_script_sha256": true,
+    "same_case_matrix": true,
+    "same_completion_token_sha256_per_case_repeat": false,
+    "same_git_commit": true,
+    "same_gpu_and_software_stack": true,
+    "same_model_identity_or_path": true,
+    "same_seed_and_config_except_cudagraph_mode": true,
+    "status_complete": true,
+    "summary_recomputed_from_raw_steps": true
+  }
+}

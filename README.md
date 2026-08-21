@@ -388,3 +388,221 @@ Unified therefore remains the default; Split is retained as an explicit
 phase-specialized path, not presented as a speedup. Full metadata, correctness,
 execution order, and diagnostic repeats are in
 [`attention.json`](benchmark_results/rtx5070/attention.json).
+
+### Runtime feature validation: full-decode CUDA Graph
+
+This experiment is intentionally separate from the scheduler results above and
+the cross-framework comparison below. `bench_cudagraph.py` compares only
+nano-vLLM `NONE` with nano-vLLM `FULL_DECODE_ONLY` on exact-size unified pure
+decode batches. Each case has one excluded follower-prefill step, an independent
+8-step warm-up batch, and five measured repeats of 64 decode steps. The first
+measured KV length is shown in the case name and increases by one per step; no
+request or graph-bucket padding is used.
+
+The final RTX 5070 runs used the same Qwen3-0.6B BF16 model, seed 2026,
+FlashInfer unified attention, 16-token pages, and script SHA-256
+`c9947824d05cf9c9a0feb2a3545dd0393ff1a53c877201a5b0b024c982c9fc31`.
+The hardened comparison validator rederived every repeat and case summary from
+the raw 64-step timings, checked KV-length and counter progression, and confirmed
+the complete 15-case matrix, identical configuration except graph policy,
+identical model/source provenance, and the same GPU and software stack.
+
+| Case | NONE step median (ms) | FULL step median (ms) | Step delta | NONE TPOT (ms) | FULL TPOT (ms) | TPOT delta | NONE tok/s | FULL tok/s | Replay NONE / FULL |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|
+| B1 / KV512 | 9.436 | 4.465 | -52.69% | 12.922 | 4.562 | -64.69% | 77.4 | 219.2 | 0% / 100% |
+| B1 / KV2048 | 9.292 | 5.404 | -41.84% | 11.038 | 5.772 | -47.71% | 90.6 | 173.3 | 0% / 100% |
+| B1 / KV4096 | 9.463 | 6.561 | -30.67% | 12.572 | 6.934 | -44.84% | 79.5 | 144.2 | 0% / 100% |
+| B4 / KV512 | 9.384 | 4.759 | -49.29% | 10.742 | 4.961 | -53.82% | 372.4 | 806.3 | 0% / 100% |
+| B4 / KV2048 | 9.455 | 5.747 | -39.22% | 10.829 | 6.124 | -43.44% | 369.4 | 653.1 | 0% / 100% |
+| B4 / KV4096 | 9.172 | 6.930 | -24.45% | 10.303 | 7.294 | -29.20% | 388.2 | 548.4 | 0% / 100% |
+| B8 / KV512 | 9.075 | 4.851 | -46.54% | 9.844 | 5.233 | -46.84% | 812.7 | 1,528.7 | 0% / 100% |
+| B8 / KV2048 | 9.209 | 5.794 | -37.08% | 10.145 | 6.001 | -40.85% | 788.6 | 1,333.1 | 0% / 100% |
+| B8 / KV4096 | 9.409 | 6.777 | -27.97% | 10.388 | 7.067 | -31.97% | 770.1 | 1,132.1 | 0% / 100% |
+| B16 / KV512 | 9.524 | 5.130 | -46.13% | 11.147 | 5.382 | -51.72% | 1,435.3 | 2,973.1 | 0% / 100% |
+| B16 / KV2048 | 9.433 | 6.890 | -26.96% | 10.359 | 7.102 | -31.45% | 1,544.5 | 2,253.0 | 0% / 100% |
+| B16 / KV4096 | 10.270 | 9.341 | -9.05% | 12.034 | 9.602 | -20.20% | 1,329.6 | 1,666.3 | 0% / 100% |
+| B32 / KV512 | 9.410 | 6.274 | -33.32% | 10.667 | 6.609 | -38.05% | 2,999.9 | 4,842.1 | 0% / 100% |
+| B32 / KV2048 | 9.948 | 9.095 | -8.58% | 11.196 | 9.302 | -16.92% | 2,858.1 | 3,440.3 | 0% / 100% |
+| B32 / KV4096 | 13.402 | 12.567 | -6.22% | 14.284 | 12.776 | -10.55% | 2,240.3 | 2,504.7 | 0% / 100% |
+
+`FULL_DECODE_ONLY` captured buckets `1,4,8,16,32` in 298.588 ms and used
+118,684,160 additional bytes (113.186 MiB); `NONE` captured nothing and used
+no graph memory. All 4,800 measured FULL decode steps replayed and all 4,800
+exact-bucket decisions hit. The benchmark also compares every autoregressive
+completion hash: 62/75 case-repeat hashes matched. This hash is diagnostic,
+not a correctness gate, because tolerance-level BF16 logit differences can
+cross a sampling boundary and accumulate; hidden-state and logit tolerance
+tests provide the graph correctness check.
+
+Reproduce the two policies in separate processes, then validate and render the
+comparison:
+
+```bash
+PYTHONHASHSEED=0 FLASHINFER_CUDA_ARCH_LIST=12.0f FLASHINFER_DISABLE_JIT=1 \
+/tmp/nanovllm-flashinfer-env/bin/python bench_cudagraph.py \
+  --model /workspace/aiinfra/models/Qwen3-0.6B --mode none \
+  --output benchmark_results/cudagraph/cudagraph_none.json
+
+PYTHONHASHSEED=0 FLASHINFER_CUDA_ARCH_LIST=12.0f FLASHINFER_DISABLE_JIT=1 \
+/tmp/nanovllm-flashinfer-env/bin/python bench_cudagraph.py \
+  --model /workspace/aiinfra/models/Qwen3-0.6B --mode full_decode_only \
+  --output benchmark_results/cudagraph/cudagraph_full_decode_only.json
+
+/tmp/nanovllm-flashinfer-env/bin/python bench_cudagraph.py compare \
+  --none benchmark_results/cudagraph/cudagraph_none.json \
+  --full benchmark_results/cudagraph/cudagraph_full_decode_only.json \
+  --output benchmark_results/cudagraph/cudagraph_comparison.json \
+  --markdown-output benchmark_results/cudagraph/cudagraph_comparison.md
+```
+
+Raw per-step timings and runtime counters are in
+[`cudagraph_none.json`](benchmark_results/cudagraph/cudagraph_none.json) and
+[`cudagraph_full_decode_only.json`](benchmark_results/cudagraph/cudagraph_full_decode_only.json).
+The validated machine-readable and rendered tables are
+[`cudagraph_comparison.json`](benchmark_results/cudagraph/cudagraph_comparison.json)
+and [`cudagraph_comparison.md`](benchmark_results/cudagraph/cudagraph_comparison.md).
+These figures validate the runtime feature only and are not evidence about LPM,
+temporary deprioritization, or vLLM scheduler performance.
+
+### Eager-only nano-vLLM versus vLLM
+
+`bench_eager_compare.py` runs nano-vLLM and vLLM in separate processes over
+the same immutable token-ID trace. This is an end-to-end comparison of the
+nano-vLLM cache-aware scheduler and vLLM's default Eager scheduler on two
+targeted shared-prefix workloads; it is not an isolated scheduler
+microbenchmark.
+
+The comparison validator confirmed identical input token IDs, arrival order
+and time, output lengths, request manifests, model path and file hashes,
+tokenizer files, seed, ignore-EOS setting, and benchmark script
+(`033f8215c221f65103e6975ef3904405d105a99164c4ac1725d143aba60100a3`).
+Both runs used the same RTX 5070
+(`GPU-d579820b-3886-c645-9f70-5649b0bdf393`) with driver 596.49, Torch
+2.11.0+cu128, BF16, and seed 2026 reset before
+the measured phase, temperature 1.0, tensor parallel size 1, prefix caching,
+chunked prefill, 16-token blocks, and `max_num_seqs=4`. Both result files
+report `cudagraph_mode=none` and `enforce_eager=true`: nano-vLLM explicitly
+uses `CUDAGraphPolicy.NONE`, while vLLM uses `enforce_eager=True`.
+
+| Workload | Measured requests (+ priming) | Logical KV blocks | Max model / batched tokens | Trace SHA-256 | Manifest SHA-256 |
+|---|---:|---:|---:|---|---|
+| Long-prefix KV pressure (LPM) | 24 (+3) | 896 | 4,352 / 16,384 | `5ca261fe6303284021acea7883f71cad3e288dc764e13452ab807d201bc44188` | `bd4ae18070ec2fd8961642aa50b539941068a8f2ab7d8abc8f7345100dd1906b` |
+| In-batch prefix burst | 16 (+0) | 640 | 2,304 / 8,704 | `68391710ea9ced0a847dc1be385853a12bdf1bced20cb73fecdb97ea63ce3d0f` | `1bc44d69e6ea521d48d05178ac6193109aae4558cd06ac8e0bc40fb6346c928c` |
+
+Both traces identify the same Qwen3-0.6B model and tokenizer files:
+
+| File | SHA-256 |
+|---|---|
+| `config.json` | `660db3b73d788119c04535e48cf9be5f55bc3100841a718637ae695b442f27dd` |
+| `generation_config.json` | `2325da0f15bb848e018c5ae071b7943332e9f871d6b60e2ed22ca97d4cb993d2` |
+| `model.safetensors` | `f47f71177f32bcd101b7573ec9171e6a57f4f4d31148d38e382306f42996874b` |
+| `tokenizer.json` | `aeb13307a71acd8fe81861d94ad54ab689df773318809eed3cbe794b4492dae4` |
+| `tokenizer_config.json` | `d5d09f07b48c3086c508b30d1c9114bd1189145b74e982a265350c923acd8101` |
+
+The checked-in measurements compare only P95 TTFT, request throughput, and
+total batch completion time. nano-vLLM scheduler counters and vLLM's reported
+cached-token counters have different definitions and are retained in the raw
+files only; they are not compared across backends.
+
+| Workload | Backend | P95 TTFT (ms) | Throughput (req/s) | Completion (s) |
+|---|---|---:|---:|---:|
+| Long-prefix KV pressure | nano-vLLM | 5,993.797 | 3.456 | 6.944 |
+| Long-prefix KV pressure | vLLM | **4,526.665** | **4.440** | **5.405** |
+| In-batch prefix burst | nano-vLLM | 3,633.091 | 3.716 | 4.306 |
+| In-batch prefix burst | vLLM | **2,928.853** | **4.285** | **3.734** |
+
+vLLM was faster on all three comparable metrics in both RTX 5070 runs. This
+result is limited to these traces and software stacks; it must not be
+generalized to other workloads or attributed to CUDA Graph, because both
+backends were forced to Eager execution.
+
+#### Reproduction
+
+Generate both deterministic traces with the nano-vLLM environment:
+
+```bash
+MODEL_DIR=/workspace/aiinfra/models/Qwen3-0.6B
+RESULT_DIR=benchmark_results/eager_compare
+NANO_PY=/tmp/nanovllm-flashinfer-env/bin/python
+
+for WORKLOAD_NAME in lpm in-batch; do
+  "$NANO_PY" bench_eager_compare.py generate-trace "$WORKLOAD_NAME" \
+    --model "$MODEL_DIR" --seed 2026 \
+    --output "$RESULT_DIR/$WORKLOAD_NAME.trace.json"
+done
+```
+
+Run nano-vLLM with its validated FlashInfer 0.6.17 cu129 AOT cache and JIT
+disabled. Engine initialization and any prefix-priming phase are outside the
+measured interval.
+
+```bash
+export CUDA_HOME=/usr/local/cuda
+export FLASHINFER_CUDA_ARCH_LIST=12.0f
+export FLASHINFER_DISABLE_JIT=1
+export LD_LIBRARY_PATH=/usr/local/cuda/lib64${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}
+
+for WORKLOAD_NAME in lpm in-batch; do
+  "$NANO_PY" bench_eager_compare.py run-nano \
+    --trace "$RESULT_DIR/$WORKLOAD_NAME.trace.json" \
+    --output "$RESULT_DIR/$WORKLOAD_NAME.nano.json"
+done
+```
+
+The measured vLLM environment used its packaged CUDA 13 toolkit through this
+shim. Its FlashInfer 0.6.14 installation has no `flashinfer-jit-cache` AOT
+package, so `FLASHINFER_DISABLE_JIT` is intentionally unset: missing kernels
+may compile during engine startup, before the measured interval. Do not reuse
+`VLLM_ALLOW_INSECURE_SERIALIZATION=1` with untrusted code; this benchmark uses
+it only to send the seed-reset callback to its trusted local worker through
+`collective_rpc`.
+
+```bash
+VLLM_ENV_DIR=/workspace/aiinfra/.venvs/nanovllm-awq
+VLLM_PY="$VLLM_ENV_DIR/bin/python"
+VLLM_CUDA_DIR="$VLLM_ENV_DIR/lib/python3.10/site-packages/nvidia/cu13"
+VLLM_SHIM_DIR=/tmp/vllm-cuda13-shim
+
+mkdir -p "$VLLM_SHIM_DIR/lib64"
+ln -sfn "$VLLM_CUDA_DIR/bin" "$VLLM_SHIM_DIR/bin"
+ln -sfn "$VLLM_CUDA_DIR/include" "$VLLM_SHIM_DIR/include"
+ln -sfn "$VLLM_CUDA_DIR/nvvm" "$VLLM_SHIM_DIR/nvvm"
+ln -sfn "$VLLM_CUDA_DIR/lib/libcudart.so.13" \
+  "$VLLM_SHIM_DIR/lib64/libcudart.so"
+ln -sfn /usr/lib/x86_64-linux-gnu/libcuda.so \
+  "$VLLM_SHIM_DIR/lib64/libcuda.so"
+
+export PATH="$VLLM_SHIM_DIR/bin:$PATH"
+export CUDA_HOME="$VLLM_SHIM_DIR"
+export FLASHINFER_CUDA_ARCH_LIST=12.0f
+unset FLASHINFER_DISABLE_JIT
+export VLLM_USE_V2_MODEL_RUNNER=0
+export VLLM_USE_FLASHINFER_SAMPLER=0
+export VLLM_ALLOW_INSECURE_SERIALIZATION=1
+export LD_LIBRARY_PATH="$VLLM_CUDA_DIR/lib:$VLLM_ENV_DIR/lib/python3.10/site-packages/torch/lib:$VLLM_SHIM_DIR/lib64:/usr/local/cuda/lib64${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
+
+for WORKLOAD_NAME in lpm in-batch; do
+  "$VLLM_PY" bench_eager_compare.py run-vllm \
+    --trace "$RESULT_DIR/$WORKLOAD_NAME.trace.json" \
+    --output "$RESULT_DIR/$WORKLOAD_NAME.vllm.json"
+done
+```
+
+Finally, validate the fairness contract and produce the comparison files:
+
+```bash
+for WORKLOAD_NAME in lpm in-batch; do
+  "$NANO_PY" bench_eager_compare.py compare \
+    --trace "$RESULT_DIR/$WORKLOAD_NAME.trace.json" \
+    --nano-result "$RESULT_DIR/$WORKLOAD_NAME.nano.json" \
+    --vllm-result "$RESULT_DIR/$WORKLOAD_NAME.vllm.json" \
+    --output "$RESULT_DIR/$WORKLOAD_NAME.comparison.json"
+done
+```
+
+Raw traces, per-request results, runtime provenance, and validated comparisons:
+
+| Workload | Trace | nano-vLLM | vLLM | Comparison |
+|---|---|---|---|---|
+| Long-prefix KV pressure | [`lpm.trace.json`](benchmark_results/eager_compare/lpm.trace.json) | [`lpm.nano.json`](benchmark_results/eager_compare/lpm.nano.json) | [`lpm.vllm.json`](benchmark_results/eager_compare/lpm.vllm.json) | [`lpm.comparison.json`](benchmark_results/eager_compare/lpm.comparison.json) |
+| In-batch prefix burst | [`in-batch.trace.json`](benchmark_results/eager_compare/in-batch.trace.json) | [`in-batch.nano.json`](benchmark_results/eager_compare/in-batch.nano.json) | [`in-batch.vllm.json`](benchmark_results/eager_compare/in-batch.vllm.json) | [`in-batch.comparison.json`](benchmark_results/eager_compare/in-batch.comparison.json) |
