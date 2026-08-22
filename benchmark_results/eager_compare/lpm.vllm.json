@@ -3,27 +3,45 @@
     "actual_dtype": "torch.bfloat16",
     "actual_model_path": "/workspace/aiinfra/models/Qwen3-0.6B",
     "actual_tokenizer_path": "/workspace/aiinfra/models/Qwen3-0.6B",
+    "async_scheduling": true,
+    "configured_physical_kv_blocks": 897,
+    "counter_instrumentation": {
+      "benchmark_only": true,
+      "changes_scheduling_policy": false,
+      "engine_core_snapshot_method": "_nanovllm_benchmark_metrics_snapshot",
+      "inherits_default_async_scheduler": true,
+      "protocol_version": 1,
+      "scheduler_class": "bench_vllm_metrics.InstrumentedScheduler",
+      "source_path": "/workspace/aiinfra/nano-vllm-v1/bench_vllm_metrics.py",
+      "source_sha256": "c3916058bf7c9611c4f622b69f6df13f2261537c4a6e128cdf014b39c580f461"
+    },
     "cudagraph_mode": "none",
     "enforce_eager": true,
     "fairness_checks": {
       "block_size": true,
       "chunked_prefill": true,
-      "default_fcfs_scheduler": true,
+      "configured_kv_blocks_override": true,
+      "default_async_scheduling": true,
+      "default_fcfs_policy": true,
       "dtype_bfloat16": true,
       "enforce_eager": true,
+      "equal_usable_kv_capacity": true,
       "flashinfer_attention": true,
-      "logical_kv_blocks_override": true,
       "max_model_len": true,
       "max_num_batched_tokens": true,
       "max_num_seqs": true,
       "model_path": true,
       "model_shape": true,
       "prefix_caching": true,
+      "read_only_scheduler_observer": true,
       "seed": true,
+      "single_data_parallel_engine": true,
+      "single_pipeline_stage": true,
       "tensor_parallel_size": true,
       "tokenizer_path": true
     },
     "requested": {
+      "async_scheduling": true,
       "attention_config": {
         "backend": "FLASHINFER"
       },
@@ -33,19 +51,22 @@
       "enable_chunked_prefill": true,
       "enable_prefix_caching": true,
       "enforce_eager": true,
-      "gpu_memory_utilization": 0.9,
+      "gpu_memory_utilization": 0.7,
       "max_model_len": 4352,
       "max_num_batched_tokens": 16384,
       "max_num_seqs": 4,
       "model": "/workspace/aiinfra/models/Qwen3-0.6B",
-      "num_gpu_blocks_override": 896,
+      "num_gpu_blocks_override": 897,
+      "scheduler_cls": "bench_vllm_metrics.InstrumentedScheduler",
       "seed": 2026,
       "tensor_parallel_size": 1
     },
-    "scheduler": "vLLM default eager scheduler",
+    "reserved_null_blocks": 1,
+    "scheduler": "vLLM default async FCFS policy with a read-only benchmark counter observer",
     "seed": 2026,
     "seed_reset_before_measured": true,
-    "seed_reset_transport": "trusted local collective_rpc callback"
+    "seed_reset_transport": "trusted local collective_rpc callback",
+    "usable_logical_kv_blocks": 896
   },
   "execution_contract": {
     "block_size": 16,
@@ -65,14 +86,75 @@
   "interpretation_boundary": "This is a targeted shared-prefix eager-only scheduler workload, not a claim about general framework performance.",
   "metrics": {
     "backend_specific": {
-      "definition": "vLLM RequestOutput.num_cached_tokens and a derived prompt-minus-cache count; not definition-equivalent to nano-vllm SchedulerMetrics",
+      "allocated_block_count": 1579,
+      "cached_block_eviction_count": 1465,
+      "computed_prompt_tokens": 23647,
+      "definition": "Direct read-only scheduler observation. Computed prompt tokens sum scheduled prompt intervals, including recomputation. Cached-block evictions count physical allocation reuse that removes at least one live prefix-cache mapping.",
       "derived_computed_prompt_tokens": 23647,
-      "reported_cached_prompt_tokens": 36864
+      "native_counter_windows": {
+        "local_compute": {
+          "after": 36319,
+          "before": 12672,
+          "delta": 23647,
+          "labels": {
+            "engine": "0",
+            "source": "local_compute"
+          },
+          "metric_name": "vllm:prompt_tokens_by_source"
+        },
+        "preemptions": {
+          "after": 0,
+          "before": 0,
+          "delta": 0,
+          "labels": {
+            "engine": "0"
+          },
+          "metric_name": "vllm:num_preemptions"
+        }
+      },
+      "observer_pid": 741923,
+      "observer_window": {
+        "after": {
+          "allocated_block_count": 2383,
+          "async_scheduler": true,
+          "block_pool_observer_installed": true,
+          "cached_block_eviction_count": 1465,
+          "computed_prompt_tokens": 36319,
+          "observer_pid": 741923,
+          "preemption_count": 0,
+          "protocol_version": 1,
+          "scheduler_step_count": 587
+        },
+        "before": {
+          "allocated_block_count": 804,
+          "async_scheduler": true,
+          "block_pool_observer_installed": true,
+          "cached_block_eviction_count": 0,
+          "computed_prompt_tokens": 12672,
+          "observer_pid": 741923,
+          "preemption_count": 0,
+          "protocol_version": 1,
+          "scheduler_step_count": 197
+        },
+        "delta": {
+          "allocated_block_count": 1579,
+          "cached_block_eviction_count": 1465,
+          "computed_prompt_tokens": 23647,
+          "preemption_count": 0,
+          "scheduler_step_count": 390
+        }
+      },
+      "preemption_count": 0,
+      "reported_cached_prompt_tokens": 36864,
+      "scheduler_step_count": 390,
+      "total_prompt_tokens": 60511
     },
     "comparable": {
-      "p95_ttft_ms": 4361.967802000436,
-      "request_throughput_rps": 4.336051614989796,
-      "total_batch_completion_s": 5.534989463001693
+      "cached_block_eviction_count": 1465,
+      "computed_prompt_tokens": 23647,
+      "p95_ttft_ms": 4279.197568001109,
+      "request_throughput_rps": 4.8444696111309025,
+      "total_batch_completion_s": 4.954102704010438
     }
   },
   "priming_requests": [
@@ -98,8 +180,8 @@
   "requests": [
     {
       "arrival_order": 0,
-      "completion_ms": 793.5550160000275,
-      "engine_request_id": "3-8cc2ccf7",
+      "completion_ms": 883.6153930024011,
+      "engine_request_id": "3-8f71893e",
       "output_tokens": 64,
       "prefix_group": null,
       "prompt_len": 809,
@@ -107,13 +189,13 @@
       "reported_num_cached_tokens": 0,
       "request_id": "Cold1",
       "requested_output_len": 64,
-      "ttft_ms": 72.66790200083051,
+      "ttft_ms": 68.22580700099934,
       "vllm_output_request_id": "3"
     },
     {
       "arrival_order": 1,
-      "completion_ms": 793.5550160000275,
-      "engine_request_id": "4-995545f7",
+      "completion_ms": 883.6153930024011,
+      "engine_request_id": "4-a481a142",
       "output_tokens": 64,
       "prefix_group": null,
       "prompt_len": 674,
@@ -121,13 +203,13 @@
       "reported_num_cached_tokens": 0,
       "request_id": "Cold2",
       "requested_output_len": 64,
-      "ttft_ms": 72.66790200083051,
+      "ttft_ms": 68.22580700099934,
       "vllm_output_request_id": "4"
     },
     {
       "arrival_order": 2,
-      "completion_ms": 793.5550160000275,
-      "engine_request_id": "5-87f71b57",
+      "completion_ms": 883.6153930024011,
+      "engine_request_id": "5-b8151337",
       "output_tokens": 64,
       "prefix_group": null,
       "prompt_len": 976,
@@ -135,13 +217,13 @@
       "reported_num_cached_tokens": 0,
       "request_id": "Cold3",
       "requested_output_len": 64,
-      "ttft_ms": 72.66790200083051,
+      "ttft_ms": 68.22580700099934,
       "vllm_output_request_id": "5"
     },
     {
       "arrival_order": 3,
-      "completion_ms": 793.5550160000275,
-      "engine_request_id": "6-8fcc714a",
+      "completion_ms": 883.6153930024011,
+      "engine_request_id": "6-89cdcfa6",
       "output_tokens": 64,
       "prefix_group": null,
       "prompt_len": 644,
@@ -149,13 +231,13 @@
       "reported_num_cached_tokens": 0,
       "request_id": "Cold4",
       "requested_output_len": 64,
-      "ttft_ms": 72.66790200083051,
+      "ttft_ms": 68.22580700099934,
       "vllm_output_request_id": "6"
     },
     {
       "arrival_order": 4,
-      "completion_ms": 1698.167791000742,
-      "engine_request_id": "7-a1a6467a",
+      "completion_ms": 1741.5974080067826,
+      "engine_request_id": "7-b42fff91",
       "output_tokens": 64,
       "prefix_group": null,
       "prompt_len": 813,
@@ -163,13 +245,13 @@
       "reported_num_cached_tokens": 0,
       "request_id": "Cold5",
       "requested_output_len": 64,
-      "ttft_ms": 859.3180550014949,
+      "ttft_ms": 946.5831850102404,
       "vllm_output_request_id": "7"
     },
     {
       "arrival_order": 5,
-      "completion_ms": 1698.167791000742,
-      "engine_request_id": "8-bdf730b2",
+      "completion_ms": 1741.5974080067826,
+      "engine_request_id": "8-91dc82c0",
       "output_tokens": 64,
       "prefix_group": null,
       "prompt_len": 622,
@@ -177,13 +259,13 @@
       "reported_num_cached_tokens": 0,
       "request_id": "Cold6",
       "requested_output_len": 64,
-      "ttft_ms": 859.3180550014949,
+      "ttft_ms": 946.5831850102404,
       "vllm_output_request_id": "8"
     },
     {
       "arrival_order": 6,
-      "completion_ms": 1698.167791000742,
-      "engine_request_id": "9-899d8dd4",
+      "completion_ms": 1741.5974080067826,
+      "engine_request_id": "9-b7d6957d",
       "output_tokens": 64,
       "prefix_group": null,
       "prompt_len": 815,
@@ -191,13 +273,13 @@
       "reported_num_cached_tokens": 0,
       "request_id": "Cold7",
       "requested_output_len": 64,
-      "ttft_ms": 859.3180550014949,
+      "ttft_ms": 946.5831850102404,
       "vllm_output_request_id": "9"
     },
     {
       "arrival_order": 7,
-      "completion_ms": 1698.167791000742,
-      "engine_request_id": "10-ae29e836",
+      "completion_ms": 1741.5974080067826,
+      "engine_request_id": "10-a721a796",
       "output_tokens": 64,
       "prefix_group": null,
       "prompt_len": 756,
@@ -205,13 +287,13 @@
       "reported_num_cached_tokens": 0,
       "request_id": "Cold8",
       "requested_output_len": 64,
-      "ttft_ms": 859.3180550014949,
+      "ttft_ms": 946.5831850102404,
       "vllm_output_request_id": "10"
     },
     {
       "arrival_order": 8,
-      "completion_ms": 2373.9947700014454,
-      "engine_request_id": "11-a100511e",
+      "completion_ms": 2623.4320950024994,
+      "engine_request_id": "11-87495193",
       "output_tokens": 64,
       "prefix_group": null,
       "prompt_len": 833,
@@ -219,13 +301,13 @@
       "reported_num_cached_tokens": 0,
       "request_id": "Cold9",
       "requested_output_len": 64,
-      "ttft_ms": 1777.2094079991803,
+      "ttft_ms": 1821.978054009378,
       "vllm_output_request_id": "11"
     },
     {
       "arrival_order": 9,
-      "completion_ms": 2373.9947700014454,
-      "engine_request_id": "12-ad33b4d2",
+      "completion_ms": 2623.4320950024994,
+      "engine_request_id": "12-881784c9",
       "output_tokens": 64,
       "prefix_group": null,
       "prompt_len": 1011,
@@ -233,13 +315,13 @@
       "reported_num_cached_tokens": 0,
       "request_id": "Cold10",
       "requested_output_len": 64,
-      "ttft_ms": 1777.2094079991803,
+      "ttft_ms": 1821.978054009378,
       "vllm_output_request_id": "12"
     },
     {
       "arrival_order": 10,
-      "completion_ms": 2373.9947700014454,
-      "engine_request_id": "13-833c1426",
+      "completion_ms": 2623.4320950024994,
+      "engine_request_id": "13-9c46aa3f",
       "output_tokens": 64,
       "prefix_group": null,
       "prompt_len": 888,
@@ -247,13 +329,13 @@
       "reported_num_cached_tokens": 0,
       "request_id": "Cold11",
       "requested_output_len": 64,
-      "ttft_ms": 1777.2094079991803,
+      "ttft_ms": 1821.978054009378,
       "vllm_output_request_id": "13"
     },
     {
       "arrival_order": 11,
-      "completion_ms": 2373.9947700014454,
-      "engine_request_id": "14-a237d25f",
+      "completion_ms": 2623.4320950024994,
+      "engine_request_id": "14-a3d69bf8",
       "output_tokens": 64,
       "prefix_group": null,
       "prompt_len": 982,
@@ -261,13 +343,13 @@
       "reported_num_cached_tokens": 0,
       "request_id": "Cold12",
       "requested_output_len": 64,
-      "ttft_ms": 1777.2094079991803,
+      "ttft_ms": 1821.978054009378,
       "vllm_output_request_id": "14"
     },
     {
       "arrival_order": 12,
-      "completion_ms": 3442.7780469995923,
-      "engine_request_id": "15-a064d261",
+      "completion_ms": 3575.3118389984593,
+      "engine_request_id": "15-871d3d8a",
       "output_tokens": 64,
       "prefix_group": "A",
       "prompt_len": 4224,
@@ -275,13 +357,13 @@
       "reported_num_cached_tokens": 0,
       "request_id": "A1",
       "requested_output_len": 64,
-      "ttft_ms": 2736.5159540022432,
+      "ttft_ms": 2960.4610660026083,
       "vllm_output_request_id": "15"
     },
     {
       "arrival_order": 13,
-      "completion_ms": 3442.7780469995923,
-      "engine_request_id": "16-93b7dc40",
+      "completion_ms": 3575.3118389984593,
+      "engine_request_id": "16-82e32737",
       "output_tokens": 64,
       "prefix_group": "B",
       "prompt_len": 4224,
@@ -289,13 +371,13 @@
       "reported_num_cached_tokens": 0,
       "request_id": "B1",
       "requested_output_len": 64,
-      "ttft_ms": 2736.5159540022432,
+      "ttft_ms": 2960.4610660026083,
       "vllm_output_request_id": "16"
     },
     {
       "arrival_order": 14,
-      "completion_ms": 3442.7780469995923,
-      "engine_request_id": "17-bcd96983",
+      "completion_ms": 3575.3118389984593,
+      "engine_request_id": "17-a614cb21",
       "output_tokens": 64,
       "prefix_group": "C",
       "prompt_len": 4224,
@@ -303,13 +385,13 @@
       "reported_num_cached_tokens": 0,
       "request_id": "C1",
       "requested_output_len": 64,
-      "ttft_ms": 2736.5159540022432,
+      "ttft_ms": 2960.4610660026083,
       "vllm_output_request_id": "17"
     },
     {
       "arrival_order": 15,
-      "completion_ms": 3442.7780469995923,
-      "engine_request_id": "18-95ddaeaa",
+      "completion_ms": 3575.3118389984593,
+      "engine_request_id": "18-83992811",
       "output_tokens": 64,
       "prefix_group": "A",
       "prompt_len": 4224,
@@ -317,13 +399,13 @@
       "reported_num_cached_tokens": 4096,
       "request_id": "A2",
       "requested_output_len": 64,
-      "ttft_ms": 2736.5159540022432,
+      "ttft_ms": 2960.4610660026083,
       "vllm_output_request_id": "18"
     },
     {
       "arrival_order": 16,
-      "completion_ms": 4333.788264000759,
-      "engine_request_id": "19-881f26fb",
+      "completion_ms": 4252.698463998968,
+      "engine_request_id": "19-b1625fc7",
       "output_tokens": 64,
       "prefix_group": "B",
       "prompt_len": 4224,
@@ -331,13 +413,13 @@
       "reported_num_cached_tokens": 4096,
       "request_id": "B2",
       "requested_output_len": 64,
-      "ttft_ms": 3471.4197280009103,
+      "ttft_ms": 3615.388192003593,
       "vllm_output_request_id": "19"
     },
     {
       "arrival_order": 17,
-      "completion_ms": 4333.788264000759,
-      "engine_request_id": "20-8a450eff",
+      "completion_ms": 4252.698463998968,
+      "engine_request_id": "20-91f0666c",
       "output_tokens": 64,
       "prefix_group": "C",
       "prompt_len": 4224,
@@ -345,13 +427,13 @@
       "reported_num_cached_tokens": 4096,
       "request_id": "C2",
       "requested_output_len": 64,
-      "ttft_ms": 3471.4197280009103,
+      "ttft_ms": 3615.388192003593,
       "vllm_output_request_id": "20"
     },
     {
       "arrival_order": 18,
-      "completion_ms": 4333.788264000759,
-      "engine_request_id": "21-878076e4",
+      "completion_ms": 4252.698463998968,
+      "engine_request_id": "21-b1d9ecbd",
       "output_tokens": 64,
       "prefix_group": "A",
       "prompt_len": 4224,
@@ -359,13 +441,13 @@
       "reported_num_cached_tokens": 4096,
       "request_id": "A3",
       "requested_output_len": 64,
-      "ttft_ms": 3471.4197280009103,
+      "ttft_ms": 3615.388192003593,
       "vllm_output_request_id": "21"
     },
     {
       "arrival_order": 19,
-      "completion_ms": 4333.788264000759,
-      "engine_request_id": "22-bf6df959",
+      "completion_ms": 4252.698463998968,
+      "engine_request_id": "22-a7550556",
       "output_tokens": 64,
       "prefix_group": "B",
       "prompt_len": 4224,
@@ -373,13 +455,13 @@
       "reported_num_cached_tokens": 4096,
       "request_id": "B3",
       "requested_output_len": 64,
-      "ttft_ms": 3471.4197280009103,
+      "ttft_ms": 3615.388192003593,
       "vllm_output_request_id": "22"
     },
     {
       "arrival_order": 20,
-      "completion_ms": 5534.410994001519,
-      "engine_request_id": "23-92d197d8",
+      "completion_ms": 4953.2653850037605,
+      "engine_request_id": "23-ad917f5a",
       "output_tokens": 64,
       "prefix_group": "C",
       "prompt_len": 4224,
@@ -387,13 +469,13 @@
       "reported_num_cached_tokens": 4096,
       "request_id": "C3",
       "requested_output_len": 64,
-      "ttft_ms": 4361.967802000436,
+      "ttft_ms": 4279.197568001109,
       "vllm_output_request_id": "23"
     },
     {
       "arrival_order": 21,
-      "completion_ms": 5534.410994001519,
-      "engine_request_id": "24-b002c359",
+      "completion_ms": 4953.2653850037605,
+      "engine_request_id": "24-a6bf7fcd",
       "output_tokens": 64,
       "prefix_group": "A",
       "prompt_len": 4224,
@@ -401,13 +483,13 @@
       "reported_num_cached_tokens": 4096,
       "request_id": "A4",
       "requested_output_len": 64,
-      "ttft_ms": 4361.967802000436,
+      "ttft_ms": 4279.197568001109,
       "vllm_output_request_id": "24"
     },
     {
       "arrival_order": 22,
-      "completion_ms": 5534.410994001519,
-      "engine_request_id": "25-9f739520",
+      "completion_ms": 4953.2653850037605,
+      "engine_request_id": "25-90749bd0",
       "output_tokens": 64,
       "prefix_group": "B",
       "prompt_len": 4224,
@@ -415,13 +497,13 @@
       "reported_num_cached_tokens": 4096,
       "request_id": "B4",
       "requested_output_len": 64,
-      "ttft_ms": 4361.967802000436,
+      "ttft_ms": 4279.197568001109,
       "vllm_output_request_id": "25"
     },
     {
       "arrival_order": 23,
-      "completion_ms": 5534.410994001519,
-      "engine_request_id": "26-b299f868",
+      "completion_ms": 4953.2653850037605,
+      "engine_request_id": "26-8b43c355",
       "output_tokens": 64,
       "prefix_group": "C",
       "prompt_len": 4224,
@@ -429,7 +511,7 @@
       "reported_num_cached_tokens": 4096,
       "request_id": "C4",
       "requested_output_len": 64,
-      "ttft_ms": 4361.967802000436,
+      "ttft_ms": 4279.197568001109,
       "vllm_output_request_id": "26"
     }
   ],
@@ -441,11 +523,13 @@
       "run-vllm",
       "--trace",
       "benchmark_results/eager_compare/lpm.trace.json",
+      "--gpu-memory-utilization",
+      "0.7",
       "--output",
-      "benchmark_results/eager_compare/lpm.vllm.json"
+      "/tmp/lpm-five-metric-official.vllm.json"
     ],
-    "benchmark_script_sha256": "ea3ad3c150a64df358c92b0dcdf3d1c53bc807154ab4e72476e8a451b6edef6f",
-    "command": "/workspace/aiinfra/.venvs/nanovllm-awq/bin/python bench_eager_compare.py run-vllm --trace benchmark_results/eager_compare/lpm.trace.json --output benchmark_results/eager_compare/lpm.vllm.json",
+    "benchmark_script_sha256": "119ac5aeaba88f69378c8b28251a92cf00f30d504d797d3a14fc380817d54787",
+    "command": "/workspace/aiinfra/.venvs/nanovllm-awq/bin/python bench_eager_compare.py run-vllm --trace benchmark_results/eager_compare/lpm.trace.json --gpu-memory-utilization 0.7 --output /tmp/lpm-five-metric-official.vllm.json",
     "cuda_driver_and_gpu": "NVIDIA GeForce RTX 5070, GPU-d579820b-3886-c645-9f70-5649b0bdf393, 596.49, 12227",
     "environment": {
       "CUDA_HOME": "/tmp/vllm-cuda13-shim",
@@ -497,11 +581,11 @@
     "hostname": "7d4488b3d310",
     "platform": "Linux-6.6.114.1-microsoft-standard-WSL2-x86_64-with-glibc2.35",
     "python": "3.10.12",
-    "timestamp_utc": "2026-08-21T16:42:52.723122+00:00",
+    "timestamp_utc": "2026-08-22T07:40:26.439170+00:00",
     "torch": "2.11.0+cu128",
     "torch_cuda": "12.8"
   },
-  "schema_version": 2,
+  "schema_version": 3,
   "seed": 2026,
   "trace": {
     "path": "/workspace/aiinfra/nano-vllm-v1/benchmark_results/eager_compare/lpm.trace.json",
@@ -805,7 +889,7 @@
       }
     ],
     "request_manifest_sha256": "bd4ae18070ec2fd8961642aa50b539941068a8f2ab7d8abc8f7345100dd1906b",
-    "sha256": "a3f29bf406cd8cbeff837712e92ba9e66fd1522f2bf4d525d44c2a8fd42e1a53"
+    "sha256": "96000c13be2e12c4576742c0e9416e143feb1a0a6ac2959a9a846d65b0e60052"
   },
   "workload": "shared_long_prefix_kv_pressure"
 }

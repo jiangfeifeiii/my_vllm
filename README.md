@@ -523,89 +523,119 @@ and [`cudagraph_comparison.md`](benchmark_results/cudagraph/cudagraph_comparison
 These figures validate the runtime feature only and are not evidence about LPM,
 Same-step Prefix Reuse, or vLLM scheduler performance.
 
-### Eager-only nano-vLLM versus vLLM
+### Eager-only five-metric LPM comparison
 
-`bench_eager_compare.py` runs nano-vLLM and vLLM in separate processes over
-the same immutable token-ID trace. This is an end-to-end comparison of the
-nano-vLLM cache-aware scheduler and vLLM's default Eager scheduler on two
-targeted shared-prefix workloads; it is not an isolated scheduler
-microbenchmark.
+`bench_eager_compare.py` compares the complete nano-vLLM cache-aware LPM
+configuration with vLLM's default asynchronous FCFS policy. Both engines run
+in separate processes over the same immutable, simultaneous-arrival token-ID
+trace. Same-step Prefix Reuse is intentionally excluded from the
+cross-framework headline comparison: it remains a functional/internal
+ablation rather than an innovation claim.
 
-The comparison validator confirmed identical input token IDs, arrival order
-and time, output lengths, request manifests, model path and file hashes,
-tokenizer files, seed, ignore-EOS setting, and benchmark script
-(`ea3ad3c150a64df358c92b0dcdf3d1c53bc807154ab4e72476e8a451b6edef6f`).
-Both runs used the same RTX 5070
-(`GPU-d579820b-3886-c645-9f70-5649b0bdf393`) with driver 596.49, Torch
-2.11.0+cu128, BF16, and seed 2026 reset before
-the measured phase, temperature 1.0, tensor parallel size 1, prefix caching,
-chunked prefill, and 16-token blocks. LPM uses `max_num_seqs=4`; In-batch
-uses `max_num_seqs=16`. Both result files
-report `cudagraph_mode=none` and `enforce_eager=true`: nano-vLLM explicitly
-uses `CUDAGraphPolicy.NONE`, while vLLM uses `enforce_eager=True`.
+The LPM stress trace primes three independent 4,096-token prefixes, then
+submits 12 cold requests followed by 12 prefix-sharing followers. It uses
+`max_num_seqs=4`, `max_num_batched_tokens=16,384`, 16-token blocks, and exactly
+896 usable KV blocks, so persistent prefixes are repeatedly exposed to
+allocation pressure and LPM has frequent opportunities to change admission
+order. The schema-v3 trace SHA-256 is
+`96000c13be2e12c4576742c0e9416e143feb1a0a6ac2959a9a846d65b0e60052`;
+its request-manifest SHA-256 remains
+`bd4ae18070ec2fd8961642aa50b539941068a8f2ab7d8abc8f7345100dd1906b`,
+identical to the earlier LPM case.
 
-| Workload | Measured requests (+ priming) | Logical KV blocks | Max model / batched tokens | Trace SHA-256 | Manifest SHA-256 |
-|---|---:|---:|---:|---|---|
-| Long-prefix KV pressure (LPM) | 24 (+3) | 896 | 4,352 / 16,384 | `a3f29bf406cd8cbeff837712e92ba9e66fd1522f2bf4d525d44c2a8fd42e1a53` | `bd4ae18070ec2fd8961642aa50b539941068a8f2ab7d8abc8f7345100dd1906b` |
-| In-batch prefix burst | 16 (+0) | 2,240 | 2,304 / 10,240 | `4b6aca655ccd03cd4da344f53cfcac27b9fb654a2d98f8a07f990d56c17c159a` | `1bc44d69e6ea521d48d05178ac6193109aae4558cd06ac8e0bc40fb6346c928c` |
+#### Five comparable metrics
 
-Both traces identify the same Qwen3-0.6B model and tokenizer files:
+| Metric | nano-vLLM LPM | vLLM FCFS | nano relative to vLLM |
+|---|---:|---:|---:|
+| Computed prompt tokens | **11,359** | 23,647 | **-51.96%** |
+| Cached-block evictions | **704** | 1,465 | **-51.95%** |
+| P95 TTFT | 4,767.668 ms | **4,279.198 ms** | +11.42% |
+| Request throughput | 4.350 req/s | **4.844 req/s** | -10.22% |
+| Total batch completion | 5.518 s | **4.954 s** | +11.38% |
 
-| File | SHA-256 |
-|---|---|
-| `config.json` | `660db3b73d788119c04535e48cf9be5f55bc3100841a718637ae695b442f27dd` |
-| `generation_config.json` | `2325da0f15bb848e018c5ae071b7943332e9f871d6b60e2ed22ca97d4cb993d2` |
-| `model.safetensors` | `f47f71177f32bcd101b7573ec9171e6a57f4f4d31148d38e382306f42996874b` |
-| `tokenizer.json` | `aeb13307a71acd8fe81861d94ad54ab689df773318809eed3cbe794b4492dae4` |
-| `tokenizer_config.json` | `d5d09f07b48c3086c508b30d1c9114bd1189145b74e982a265350c923acd8101` |
+The mechanism improvement exists in the full-module comparison: nano-vLLM
+computed 12,288 fewer prompt tokens and evicted 761 fewer cached physical
+blocks. It did not translate into a cross-framework latency win in this single
+run: nano-vLLM had 11.42% higher P95 TTFT, 10.22% lower request throughput, and
+11.38% longer completion time. Computed work and eviction are mechanism
+metrics, not a promise that end-to-end time changes proportionally.
 
-The checked-in measurements compare only P95 TTFT, request throughput, and
-total batch completion time. nano-vLLM scheduler counters and vLLM's reported
-cached-token counters have different definitions and are retained in the raw
-files only; they are not compared across backends.
+Preemption is a control metric rather than a sixth headline metric; both runs
+recorded zero preemptions. Throughput and completion are also mathematical
+reciprocals for this fixed 24-request batch, so they are two presentations of
+one completion-rate outcome rather than independent evidence.
 
-| Workload | Backend | P95 TTFT (ms) | Throughput (req/s) | Completion (s) |
-|---|---|---:|---:|---:|
-| Long-prefix KV pressure | nano-vLLM | 4,860.693 | **4.379** | **5.481** |
-| Long-prefix KV pressure | vLLM | **4,361.968** | 4.336 | 5.535 |
-| In-batch prefix burst | nano-vLLM | 512.968 | 10.219 | 1.566 |
-| In-batch prefix burst | vLLM | **303.902** | **16.609** | **0.963** |
+#### Counter definitions and validation
 
-On the In-batch trace, vLLM was faster on all three comparable metrics. On the
-LPM trace, vLLM had 11.43% lower P95 TTFT, while nano-vLLM had 0.99% higher
-request throughput and 0.98% lower completion time in this single run. These
-small LPM timing deltas should be treated as near-parity, not a generalized
-performance claim. Neither workload may be attributed to CUDA Graph because
-both backends were forced to Eager execution.
+`computed_prompt_tokens` sums the scheduled interval that intersects each
+request's prompt before vLLM advances `num_computed_tokens`. It includes prompt
+recomputation after any preemption and excludes decode tokens.
+`cached_block_eviction_count` increments once when a physical block allocation
+actually removes at least one live prefix-cache mapping; cache claims, touches,
+and explicit non-allocation invalidations are excluded. These definitions
+match nano-vLLM's `SchedulerMetrics` hooks.
 
-Cache counters remain backend-native rather than cross-framework comparable.
-On the In-batch trace, nano-vLLM records 24,576 same-step hit tokens and 10,240
-computed prompt tokens; vLLM reports 24,576 cached prompt tokens and a derived
-10,240 prompt-minus-cache count. On the LPM trace, nano-vLLM records 49,152
-initial persistent-hit tokens, zero same-step tokens, and 11,359 computed
-prompt tokens; vLLM reports 36,864 cached tokens and a derived 23,647. These
-numbers are useful diagnostics, but only P95 TTFT, request throughput, and
-completion time are validated as definition-equivalent.
+vLLM is observed by
+[`bench_vllm_metrics.py`](bench_vllm_metrics.py), a benchmark-only subclass of
+its existing `AsyncScheduler`. It does not change FCFS order, admission, block
+selection, or execution. The timed path adds only Python integer accounting;
+measurement snapshots use EngineCore's utility IPC before and after the timed
+phase. The observer source SHA-256 is
+`c3916058bf7c9611c4f622b69f6df13f2261537c4a6e128cdf014b39c580f461`.
+
+The checked-in result passed all of these conservation checks:
+
+- vLLM direct prompt work, native `local_compute` counter delta, and
+  `sum(prompt_len - num_cached_tokens)` all equal 23,647.
+- vLLM observed 1,465 destructive cached-block evictions within 1,579 measured
+  physical allocations.
+- nano-vLLM's initial hits + same-step hits + computed prompt tokens equal all
+  60,511 measured prompt tokens.
+- Both preemption counters are zero, all 24 requests generated exactly 64
+  output tokens, and every prompt hash/order matches the trace.
+
+vLLM internally reserves block 0 as a null block. The runner therefore
+configures 897 physical blocks and validates `897 - 1 = 896` usable blocks;
+nano-vLLM's measured `BlockManager` exposes 896 directly. This corrects the
+older comparison's off-by-one capacity mismatch.
+
+#### Fairness and interpretation boundary
+
+Both official runs used the same RTX 5070
+(`GPU-d579820b-3886-c645-9f70-5649b0bdf393`), driver 596.49, Torch
+2.11.0+cu128, BF16, seed 2026 reset immediately before measurement,
+temperature 1.0, ignore-EOS, tensor/data/pipeline parallel size 1, prefix
+caching, chunked prefill, `gpu_memory_utilization=0.7`, and Eager-only
+execution. `gpu_memory_utilization` controls the backing allocation, while the
+measured scheduler capacity remains fixed at 896 usable blocks. The benchmark
+script SHA-256 in both raw results is
+`119ac5aeaba88f69378c8b28251a92cf00f30d504d797d3a14fc380817d54787`.
+
+This is a complete-engine comparison, not an isolated proof that LPM alone
+caused the timing delta. nano-vLLM used FlashInfer 0.6.17 with the 0.6.17+cu129
+AOT cache and JIT disabled; the local vLLM 0.26.1.dev0 build used FlashInfer
+0.6.14 without `flashinfer-jit-cache`. The exact mechanism counters do not
+depend on that package difference, but timing does. Use the earlier
+nano-vLLM LPM-versus-nano-vLLM FCFS ablation for causal LPM claims. This is one
+run on one model, workload, and GPU; it must not be generalized or attributed
+to CUDA Graph.
 
 #### Reproduction
 
-Generate both deterministic traces with the nano-vLLM environment:
+Generate the deterministic LPM trace with the nano-vLLM environment:
 
 ```bash
 MODEL_DIR=/workspace/aiinfra/models/Qwen3-0.6B
 RESULT_DIR=benchmark_results/eager_compare
 NANO_PY=/tmp/nanovllm-flashinfer-env/bin/python
 
-for WORKLOAD_NAME in lpm in-batch; do
-  "$NANO_PY" bench_eager_compare.py generate-trace "$WORKLOAD_NAME" \
-    --model "$MODEL_DIR" --seed 2026 \
-    --output "$RESULT_DIR/$WORKLOAD_NAME.trace.json"
-done
+"$NANO_PY" bench_eager_compare.py generate-trace lpm \
+  --model "$MODEL_DIR" --seed 2026 \
+  --output "$RESULT_DIR/lpm.trace.json"
 ```
 
-Run nano-vLLM with its validated FlashInfer 0.6.17 cu129 AOT cache and JIT
-disabled. Engine initialization and any prefix-priming phase are outside the
-measured interval.
+Run nano-vLLM. Initialization and prefix priming are outside the measured
+interval:
 
 ```bash
 export CUDA_HOME=/usr/local/cuda
@@ -613,20 +643,17 @@ export FLASHINFER_CUDA_ARCH_LIST=12.0f
 export FLASHINFER_DISABLE_JIT=1
 export LD_LIBRARY_PATH=/usr/local/cuda/lib64${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}
 
-for WORKLOAD_NAME in lpm in-batch; do
-  "$NANO_PY" bench_eager_compare.py run-nano \
-    --trace "$RESULT_DIR/$WORKLOAD_NAME.trace.json" \
-    --output "$RESULT_DIR/$WORKLOAD_NAME.nano.json"
-done
+"$NANO_PY" bench_eager_compare.py run-nano \
+  --trace "$RESULT_DIR/lpm.trace.json" \
+  --gpu-memory-utilization 0.7 \
+  --output "$RESULT_DIR/lpm.nano.json"
 ```
 
-The measured vLLM environment used its packaged CUDA 13 toolkit through this
-shim. Its FlashInfer 0.6.14 installation has no `flashinfer-jit-cache` AOT
-package, so `FLASHINFER_DISABLE_JIT` is intentionally unset: missing kernels
-may compile during engine startup, before the measured interval. Do not reuse
-`VLLM_ALLOW_INSECURE_SERIALIZATION=1` with untrusted code; this benchmark uses
-it only to send the seed-reset callback to its trusted local worker through
-`collective_rpc`.
+The measured vLLM environment uses its packaged CUDA 13 toolkit through a
+shim. `FLASHINFER_DISABLE_JIT` is intentionally unset because that environment
+has no matching AOT JIT-cache package. Do not enable
+`VLLM_ALLOW_INSECURE_SERIALIZATION=1` for untrusted code; here it transports
+only the local seed-reset callback.
 
 ```bash
 VLLM_ENV_DIR=/workspace/aiinfra/.venvs/nanovllm-awq
@@ -652,28 +679,29 @@ export VLLM_USE_FLASHINFER_SAMPLER=0
 export VLLM_ALLOW_INSECURE_SERIALIZATION=1
 export LD_LIBRARY_PATH="$VLLM_CUDA_DIR/lib:$VLLM_ENV_DIR/lib/python3.10/site-packages/torch/lib:$VLLM_SHIM_DIR/lib64:/usr/local/cuda/lib64${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
 
-for WORKLOAD_NAME in lpm in-batch; do
-  "$VLLM_PY" bench_eager_compare.py run-vllm \
-    --trace "$RESULT_DIR/$WORKLOAD_NAME.trace.json" \
-    --output "$RESULT_DIR/$WORKLOAD_NAME.vllm.json"
-done
+"$VLLM_PY" bench_eager_compare.py run-vllm \
+  --trace "$RESULT_DIR/lpm.trace.json" \
+  --gpu-memory-utilization 0.7 \
+  --output "$RESULT_DIR/lpm.vllm.json"
 ```
 
-Finally, validate the fairness contract and produce the comparison files:
+Finally, validate all fairness, provenance, exact-counter, capacity, and
+prompt-conservation gates:
 
 ```bash
-for WORKLOAD_NAME in lpm in-batch; do
-  "$NANO_PY" bench_eager_compare.py compare \
-    --trace "$RESULT_DIR/$WORKLOAD_NAME.trace.json" \
-    --nano-result "$RESULT_DIR/$WORKLOAD_NAME.nano.json" \
-    --vllm-result "$RESULT_DIR/$WORKLOAD_NAME.vllm.json" \
-    --output "$RESULT_DIR/$WORKLOAD_NAME.comparison.json"
-done
+"$NANO_PY" bench_eager_compare.py compare \
+  --trace "$RESULT_DIR/lpm.trace.json" \
+  --nano-result "$RESULT_DIR/lpm.nano.json" \
+  --vllm-result "$RESULT_DIR/lpm.vllm.json" \
+  --output "$RESULT_DIR/lpm.comparison.json"
 ```
 
-Raw traces, per-request results, runtime provenance, and validated comparisons:
+Checked-in artifacts:
 
-| Workload | Trace | nano-vLLM | vLLM | Comparison |
-|---|---|---|---|---|
-| Long-prefix KV pressure | [`lpm.trace.json`](benchmark_results/eager_compare/lpm.trace.json) | [`lpm.nano.json`](benchmark_results/eager_compare/lpm.nano.json) | [`lpm.vllm.json`](benchmark_results/eager_compare/lpm.vllm.json) | [`lpm.comparison.json`](benchmark_results/eager_compare/lpm.comparison.json) |
-| In-batch prefix burst | [`in-batch.trace.json`](benchmark_results/eager_compare/in-batch.trace.json) | [`in-batch.nano.json`](benchmark_results/eager_compare/in-batch.nano.json) | [`in-batch.vllm.json`](benchmark_results/eager_compare/in-batch.vllm.json) | [`in-batch.comparison.json`](benchmark_results/eager_compare/in-batch.comparison.json) |
+| Trace | nano-vLLM | vLLM | Validated comparison |
+|---|---|---|---|
+| [`lpm.trace.json`](benchmark_results/eager_compare/lpm.trace.json) | [`lpm.nano.json`](benchmark_results/eager_compare/lpm.nano.json) | [`lpm.vllm.json`](benchmark_results/eager_compare/lpm.vllm.json) | [`lpm.comparison.json`](benchmark_results/eager_compare/lpm.comparison.json) |
+
+The older `in-batch.*` files in this directory are historical schema-v2
+artifacts. They are not accepted by the schema-v3 five-metric comparator and
+are not part of the current cross-framework claim.

@@ -1,20 +1,26 @@
 {
   "backend_specific_metrics": {
-    "cross_framework_comparable": false,
+    "headline_comparable_fields": [
+      "computed_prompt_tokens",
+      "cached_block_eviction_count",
+      "p95_ttft_ms",
+      "request_throughput_rps",
+      "total_batch_completion_s"
+    ],
     "nano_vllm": {
       "cached_block_eviction_count": 704,
       "claimed_prefix_tokens": 49152,
       "computed_prompt_tokens": 11359,
       "computed_shared_prefix_tokens": 0,
-      "definition": "nano-vllm SchedulerMetrics with disjoint initial persistent and same-step hit accounting; not compared to vLLM backend-native cache counters",
+      "definition": "nano-vLLM SchedulerMetrics. Computed prompt tokens and allocation-pressure cached-block evictions use the same definitions as the vLLM benchmark observer; the initial/same-step hit breakdown remains native.",
       "duplicate_prefill_tokens": 0,
       "first_step_prefill_admission_count": 4,
       "initial_persistent_hit_tokens": 49152,
       "initial_persistent_hit_tokens_after_first_step": 32768,
       "max_step_prefill_admission_count": 4,
       "output_token_count": 1536,
-      "output_token_throughput_tps": 280.25732613902187,
-      "p95_ttft_ms": 4860.692819998803,
+      "output_token_throughput_tps": 278.36856481576774,
+      "p95_ttft_ms": 4767.668242988293,
       "preemption_count": 0,
       "prompt_token_conservation": {
         "accounted_prompt_tokens": 60511,
@@ -26,65 +32,178 @@
         "total_prompt_tokens": 60511
       },
       "request_count": 24,
-      "request_throughput_rps": 4.379020720922217,
+      "request_throughput_rps": 4.349508825246371,
       "same_step_hit_tokens": 0,
       "same_step_hit_tokens_after_first_step": 0,
       "same_step_reused_blocks": 0,
       "same_step_reused_request_count": 0,
       "same_step_reused_seq_ids": [],
       "scheduler_step_count": 384,
-      "total_batch_completion_s": 5.480677422998269,
+      "total_batch_completion_s": 5.517864421999548,
       "total_prompt_tokens": 60511
     },
+    "native_breakdowns_are_diagnostics": true,
     "vllm": {
-      "definition": "vLLM RequestOutput.num_cached_tokens and a derived prompt-minus-cache count; not definition-equivalent to nano-vllm SchedulerMetrics",
+      "allocated_block_count": 1579,
+      "cached_block_eviction_count": 1465,
+      "computed_prompt_tokens": 23647,
+      "definition": "Direct read-only scheduler observation. Computed prompt tokens sum scheduled prompt intervals, including recomputation. Cached-block evictions count physical allocation reuse that removes at least one live prefix-cache mapping.",
       "derived_computed_prompt_tokens": 23647,
-      "reported_cached_prompt_tokens": 36864
+      "native_counter_windows": {
+        "local_compute": {
+          "after": 36319,
+          "before": 12672,
+          "delta": 23647,
+          "labels": {
+            "engine": "0",
+            "source": "local_compute"
+          },
+          "metric_name": "vllm:prompt_tokens_by_source"
+        },
+        "preemptions": {
+          "after": 0,
+          "before": 0,
+          "delta": 0,
+          "labels": {
+            "engine": "0"
+          },
+          "metric_name": "vllm:num_preemptions"
+        }
+      },
+      "observer_pid": 741923,
+      "observer_window": {
+        "after": {
+          "allocated_block_count": 2383,
+          "async_scheduler": true,
+          "block_pool_observer_installed": true,
+          "cached_block_eviction_count": 1465,
+          "computed_prompt_tokens": 36319,
+          "observer_pid": 741923,
+          "preemption_count": 0,
+          "protocol_version": 1,
+          "scheduler_step_count": 587
+        },
+        "before": {
+          "allocated_block_count": 804,
+          "async_scheduler": true,
+          "block_pool_observer_installed": true,
+          "cached_block_eviction_count": 0,
+          "computed_prompt_tokens": 12672,
+          "observer_pid": 741923,
+          "preemption_count": 0,
+          "protocol_version": 1,
+          "scheduler_step_count": 197
+        },
+        "delta": {
+          "allocated_block_count": 1579,
+          "cached_block_eviction_count": 1465,
+          "computed_prompt_tokens": 23647,
+          "preemption_count": 0,
+          "scheduler_step_count": 390
+        }
+      },
+      "preemption_count": 0,
+      "reported_cached_prompt_tokens": 36864,
+      "scheduler_step_count": 390,
+      "total_prompt_tokens": 60511
     }
   },
   "comparable_metrics": [
     {
+      "absolute_delta": -12288,
+      "lower_is_better": true,
+      "metric": "computed_prompt_tokens",
+      "nano_improvement_percent": 51.9643083689263,
+      "nano_over_vllm_ratio": 0.48035691631073707,
+      "nano_relative_delta_percent": -51.9643083689263,
+      "nano_vllm": 11359,
+      "relative_baseline_status": "defined",
+      "unit": "tokens",
+      "vllm": 23647
+    },
+    {
+      "absolute_delta": -761,
+      "lower_is_better": true,
+      "metric": "cached_block_eviction_count",
+      "nano_improvement_percent": 51.94539249146758,
+      "nano_over_vllm_ratio": 0.4805460750853242,
+      "nano_relative_delta_percent": -51.94539249146758,
+      "nano_vllm": 704,
+      "relative_baseline_status": "defined",
+      "unit": "blocks",
+      "vllm": 1465
+    },
+    {
+      "absolute_delta": 488.4706749871839,
       "lower_is_better": true,
       "metric": "p95_ttft_ms",
-      "nano_over_vllm_ratio": 1.1143348691775414,
-      "nano_relative_delta_percent": 11.433486917754138,
-      "nano_vllm": 4860.692819998803,
+      "nano_improvement_percent": -11.415006370349882,
+      "nano_over_vllm_ratio": 1.114150063703499,
+      "nano_relative_delta_percent": 11.415006370349882,
+      "nano_vllm": 4767.668242988293,
+      "relative_baseline_status": "defined",
       "unit": "ms",
-      "vllm": 4361.967802000436
+      "vllm": 4279.197568001109
     },
     {
+      "absolute_delta": -0.4949607858845315,
       "lower_is_better": false,
       "metric": "request_throughput_rps",
-      "nano_over_vllm_ratio": 1.0099097311904397,
-      "nano_relative_delta_percent": 0.990973119043961,
-      "nano_vllm": 4.379020720922217,
+      "nano_improvement_percent": -10.217027365540371,
+      "nano_over_vllm_ratio": 0.8978297263445962,
+      "nano_relative_delta_percent": -10.217027365540371,
+      "nano_vllm": 4.349508825246371,
+      "relative_baseline_status": "defined",
       "unit": "requests/s",
-      "vllm": 4.336051614989796
+      "vllm": 4.8444696111309025
     },
     {
+      "absolute_delta": 0.5637617179891095,
       "lower_is_better": true,
       "metric": "total_batch_completion_s",
-      "nano_over_vllm_ratio": 0.9901875079679068,
-      "nano_relative_delta_percent": -0.981249203209322,
-      "nano_vllm": 5.480677422998269,
+      "nano_improvement_percent": -11.37969379465496,
+      "nano_over_vllm_ratio": 1.1137969379465495,
+      "nano_relative_delta_percent": 11.37969379465496,
+      "nano_vllm": 5.517864421999548,
+      "relative_baseline_status": "defined",
       "unit": "s",
-      "vllm": 5.534989463001693
+      "vllm": 4.954102704010438
     }
   ],
-  "comparison_kind": "eager_only_cross_framework",
+  "comparison_kind": "eager_only_cross_framework_five_metric",
+  "control_metrics": {
+    "preemption_count": {
+      "headline_metric": false,
+      "nano_vllm": 0,
+      "purpose": "diagnoses recomputation and validates prompt-token conservation",
+      "vllm": 0
+    }
+  },
   "fairness": {
     "block_size": 16,
     "both_eager_only": true,
     "chunked_prefill_enabled": true,
+    "definition_aligned_cached_block_eviction_counter": true,
+    "definition_aligned_prompt_compute_counter": true,
     "dtype": "bfloat16",
+    "gpu_memory_utilization": 0.7,
     "gpu_uuid": "GPU-d579820b-3886-c645-9f70-5649b0bdf393",
     "logical_kv_blocks": 896,
     "max_num_batched_tokens": 16384,
     "max_num_seqs": 4,
+    "nano_flashinfer": {
+      "cubin_package": "0.6.17",
+      "jit_cache_package": "0.6.17+cu129",
+      "version": "0.6.17"
+    },
+    "nano_usable_kv_blocks": 896,
     "prefix_caching_enabled": true,
     "same_arrival_order_and_time": true,
     "same_benchmark_script_sha256": true,
+    "same_effective_usable_kv_capacity": true,
+    "same_flashinfer_package_stack": false,
     "same_gpu": true,
+    "same_gpu_memory_utilization": true,
     "same_ignore_eos": true,
     "same_input_token_ids": true,
     "same_model_and_tokenizer_file_hashes": true,
@@ -92,14 +211,25 @@
     "same_output_lengths": true,
     "same_request_manifest": true,
     "same_seed": true,
-    "same_trace": true
+    "same_torch": true,
+    "same_torch_cuda": true,
+    "same_trace": true,
+    "vllm_configured_kv_blocks": 897,
+    "vllm_flashinfer": {
+      "cubin_package": "0.6.14",
+      "jit_cache_package": null,
+      "version": "0.6.14"
+    },
+    "vllm_observer_changes_scheduling_policy": false,
+    "vllm_reserved_null_blocks": 1,
+    "vllm_usable_kv_blocks": 896
   },
   "inputs": {
     "nano_result": "/workspace/aiinfra/nano-vllm-v1/benchmark_results/eager_compare/lpm.nano.json",
     "vllm_result": "/workspace/aiinfra/nano-vllm-v1/benchmark_results/eager_compare/lpm.vllm.json"
   },
-  "interpretation_boundary": "Compare Cache-Aware Scheduler behavior with vLLM's default eager scheduler only for this shared-prefix target workload.  Do not generalize these numbers to all workloads or attribute them to CUDA Graph.",
-  "schema_version": 2,
+  "interpretation_boundary": "This compares complete eager-only engines on one fixed long-prefix KV-pressure trace: nano-vLLM with cache-aware LPM versus vLLM's default async FCFS policy. The two exact mechanism counters are definition-aligned. Timing remains an end-to-end framework result; if FlashInfer package stacks differ, it must not be attributed solely to the scheduling algorithm. Use the internal nano-vLLM LPM-versus-FCFS ablation for causal LPM claims, and do not generalize this single workload or attribute it to CUDA Graph.",
+  "schema_version": 3,
   "trace": {
     "path": "/workspace/aiinfra/nano-vllm-v1/benchmark_results/eager_compare/lpm.trace.json",
     "request_manifest": [
@@ -402,7 +532,8 @@
       }
     ],
     "request_manifest_sha256": "bd4ae18070ec2fd8961642aa50b539941068a8f2ab7d8abc8f7345100dd1906b",
-    "sha256": "a3f29bf406cd8cbeff837712e92ba9e66fd1522f2bf4d525d44c2a8fd42e1a53"
+    "sha256": "96000c13be2e12c4576742c0e9416e143feb1a0a6ac2959a9a846d65b0e60052"
   },
-  "workload": "shared_long_prefix_kv_pressure"
+  "workload": "shared_long_prefix_kv_pressure",
+  "workload_key": "lpm"
 }
