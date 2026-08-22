@@ -54,7 +54,7 @@ def test_vllm_internal_request_id_maps_to_external_output_id():
 def test_lpm_trace_reuses_target_workload(model_identity):
     trace = _trace("lpm", model_identity)
 
-    assert trace["schema_version"] == 2
+    assert trace["schema_version"] == 3
     assert trace["workload"] == "shared_long_prefix_kv_pressure"
     assert trace["execution_contract"] == {
         "dtype": "bfloat16",
@@ -193,7 +193,9 @@ def test_backend_configs_force_eager_and_match_budgets(model_identity):
     assert vllm["enable_prefix_caching"] is True
     assert vllm["enable_chunked_prefill"] is True
     assert nano["kvcache_block_size"] == vllm["block_size"] == 16
-    assert vllm["num_gpu_blocks_override"] == contract["logical_kv_blocks"]
+    assert vllm["num_gpu_blocks_override"] == contract["logical_kv_blocks"] + 1
+    assert vllm["async_scheduling"] is True
+    assert vllm["scheduler_cls"] == benchmark.VLLM_SCHEDULER_CLASS
     for key in ("max_model_len", "max_num_batched_tokens", "max_num_seqs"):
         assert nano[key] == vllm[key] == contract[key]
 
@@ -234,6 +236,14 @@ def _fake_result(
                     "computed_prompt_tokens": request["prompt_len"],
                 }
             )
+        else:
+            row.update(
+                {
+                    "engine_request_id": f"{request['request_id']}-deadbeef",
+                    "vllm_output_request_id": request["request_id"],
+                    "reported_num_cached_tokens": 0,
+                }
+            )
         requests.append(row)
     priming = [
         {
@@ -254,6 +264,132 @@ def _fake_result(
         else benchmark._vllm_engine_kwargs(trace, gpu_utilization)
     )
     requested = {"model": trace["model"]["path"], **requested}
+    total_prompt_tokens = sum(row["prompt_len"] for row in requests)
+    eviction_count = 7 if framework == "nano-vllm" else 11
+    comparable = {
+        "computed_prompt_tokens": total_prompt_tokens,
+        "cached_block_eviction_count": eviction_count,
+        "p95_ttft_ms": benchmark._percentile(
+            [row["ttft_ms"] for row in requests],
+            95.0,
+        ),
+        "request_throughput_rps": len(requests) / elapsed,
+        "total_batch_completion_s": elapsed,
+    }
+    if framework == "nano-vllm":
+        backend_specific = {
+            "definition": framework,
+            "initial_persistent_hit_tokens": 0,
+            "same_step_hit_tokens": 0,
+            "claimed_prefix_tokens": 0,
+            "computed_prompt_tokens": total_prompt_tokens,
+            "cached_block_eviction_count": eviction_count,
+            "preemption_count": 0,
+            "total_prompt_tokens": total_prompt_tokens,
+            "prompt_token_conservation": {
+                "initial_persistent_hit_tokens": 0,
+                "same_step_hit_tokens": 0,
+                "computed_prompt_tokens": total_prompt_tokens,
+                "accounted_prompt_tokens": total_prompt_tokens,
+                "total_prompt_tokens": total_prompt_tokens,
+                "delta_tokens": 0,
+                "balanced": True,
+            },
+            "same_step_reused_request_count": 0,
+            "same_step_reused_blocks": 0,
+            "first_step_prefill_admission_count": min(4, len(requests)),
+            "max_step_prefill_admission_count": min(4, len(requests)),
+        }
+        capacity_fields = {
+            "physical_kv_blocks": 4096,
+            "usable_logical_kv_blocks": trace["execution_contract"][
+                "logical_kv_blocks"
+            ],
+            "logical_kv_blocks": trace["execution_contract"][
+                "logical_kv_blocks"
+            ],
+        }
+    else:
+        baseline = {
+            "protocol_version": 1,
+            "observer_pid": 1234,
+            "async_scheduler": True,
+            "block_pool_observer_installed": True,
+            "computed_prompt_tokens": 4096,
+            "cached_block_eviction_count": 3,
+            "allocated_block_count": 10,
+            "preemption_count": 0,
+            "scheduler_step_count": 10,
+        }
+        delta = {
+            "computed_prompt_tokens": total_prompt_tokens,
+            "cached_block_eviction_count": eviction_count,
+            "allocated_block_count": eviction_count + 100,
+            "preemption_count": 0,
+            "scheduler_step_count": 100,
+        }
+        final = dict(baseline)
+        for name, value in delta.items():
+            final[name] += value
+        backend_specific = {
+            "definition": framework,
+            "computed_prompt_tokens": total_prompt_tokens,
+            "cached_block_eviction_count": eviction_count,
+            "preemption_count": 0,
+            "allocated_block_count": delta["allocated_block_count"],
+            "scheduler_step_count": delta["scheduler_step_count"],
+            "observer_pid": 1234,
+            "total_prompt_tokens": total_prompt_tokens,
+            "reported_cached_prompt_tokens": 0,
+            "derived_computed_prompt_tokens": total_prompt_tokens,
+            "observer_window": {
+                "before": baseline,
+                "after": final,
+                "delta": delta,
+            },
+            "native_counter_windows": {
+                "local_compute": {
+                    "metric_name": "vllm:prompt_tokens_by_source",
+                    "labels": {
+                        "engine": "0",
+                        "source": "local_compute",
+                    },
+                    "before": 4096,
+                    "after": 4096 + total_prompt_tokens,
+                    "delta": total_prompt_tokens,
+                },
+                "preemptions": {
+                    "metric_name": "vllm:num_preemptions",
+                    "labels": {"engine": "0"},
+                    "before": 0,
+                    "after": 0,
+                    "delta": 0,
+                },
+            },
+        }
+        logical_blocks = trace["execution_contract"]["logical_kv_blocks"]
+        capacity_fields = {
+            "configured_physical_kv_blocks": logical_blocks + 1,
+            "reserved_null_blocks": 1,
+            "usable_logical_kv_blocks": logical_blocks,
+            "async_scheduling": True,
+            "counter_instrumentation": {
+                "benchmark_only": True,
+                "scheduler_class": benchmark.VLLM_SCHEDULER_CLASS,
+                "inherits_default_async_scheduler": True,
+                "engine_core_snapshot_method": (
+                    "_nanovllm_benchmark_metrics_snapshot"
+                ),
+                "source_path": str(
+                    benchmark.VLLM_METRICS_HELPER_PATH.resolve()
+                ),
+                "source_sha256": benchmark._sha256_file(
+                    benchmark.VLLM_METRICS_HELPER_PATH
+                ),
+                "protocol_version": 1,
+                "changes_scheduling_policy": False,
+            },
+        }
     return {
         **result,
         "runtime": {
@@ -261,7 +397,7 @@ def _fake_result(
             "torch": "2.0.0",
             "torch_cuda": "12.0",
             "cuda_driver_and_gpu": "Fake GPU, GPU-fake, 999.0, 123 MiB",
-            "benchmark_script_sha256": "a" * 64,
+            "benchmark_script_sha256": benchmark._sha256_file(_SCRIPT_PATH),
             "gpu": {
                 "name": "Fake GPU",
                 "uuid": "GPU-fake",
@@ -269,7 +405,11 @@ def _fake_result(
                 "compute_capability": "9.9",
                 "total_memory_bytes": 123,
             },
-            "flashinfer": {"version": "0.0.fake"},
+            "flashinfer": {
+                "version": "0.0.fake",
+                "cubin_package": "0.0.fake",
+                "jit_cache_package": "0.0.fake",
+            },
             "framework": {
                 "version": "0.0.fake",
                 "git": {"head": "f" * 40},
@@ -285,66 +425,21 @@ def _fake_result(
             "seed_reset_before_measured": True,
             "enforce_eager": True,
             "cudagraph_mode": "none",
+            **capacity_fields,
         },
         "metrics": {
-            "comparable": {
-                "p95_ttft_ms": benchmark._percentile(
-                    [row["ttft_ms"] for row in requests],
-                    95.0,
-                ),
-                "request_throughput_rps": len(requests) / elapsed,
-                "total_batch_completion_s": elapsed,
-            },
-            "backend_specific": (
-                {
-                    "definition": framework,
-                    "initial_persistent_hit_tokens": 0,
-                    "same_step_hit_tokens": 0,
-                    "claimed_prefix_tokens": 0,
-                    "computed_prompt_tokens": sum(
-                        row["prompt_len"] for row in requests
-                    ),
-                    "total_prompt_tokens": sum(
-                        row["prompt_len"] for row in requests
-                    ),
-                    "prompt_token_conservation": {
-                        "initial_persistent_hit_tokens": 0,
-                        "same_step_hit_tokens": 0,
-                        "computed_prompt_tokens": sum(
-                            row["prompt_len"] for row in requests
-                        ),
-                        "accounted_prompt_tokens": sum(
-                            row["prompt_len"] for row in requests
-                        ),
-                        "total_prompt_tokens": sum(
-                            row["prompt_len"] for row in requests
-                        ),
-                        "delta_tokens": 0,
-                        "balanced": True,
-                    },
-                    "same_step_reused_request_count": 0,
-                    "same_step_reused_blocks": 0,
-                    "first_step_prefill_admission_count": min(
-                        4, len(requests)
-                    ),
-                    "max_step_prefill_admission_count": min(
-                        4, len(requests)
-                    ),
-                }
-                if framework == "nano-vllm"
-                else {"definition": framework}
-            ),
+            "comparable": comparable,
+            "backend_specific": backend_specific,
         },
         "priming_requests": priming,
         "requests": requests,
     }
 
-
 def test_compare_accepts_only_same_trace_and_eager_results(
     tmp_path,
     model_identity,
 ):
-    trace = _trace("in-batch", model_identity)
+    trace = _trace("lpm", model_identity)
     trace_path = tmp_path / "trace.json"
     nano_path = tmp_path / "nano.json"
     vllm_path = tmp_path / "vllm.json"
@@ -365,17 +460,30 @@ def test_compare_accepts_only_same_trace_and_eager_results(
     assert comparison["fairness"]["both_eager_only"] is True
     assert comparison["fairness"]["same_benchmark_script_sha256"] is True
     assert [row["metric"] for row in comparison["comparable_metrics"]] == [
+        "computed_prompt_tokens",
+        "cached_block_eviction_count",
         "p95_ttft_ms",
         "request_throughput_rps",
         "total_batch_completion_s",
     ]
+    assert comparison["fairness"][
+        "same_effective_usable_kv_capacity"
+    ] is True
     assert comparison["backend_specific_metrics"][
-        "cross_framework_comparable"
-    ] is False
+        "native_breakdowns_are_diagnostics"
+    ] is True
+    assert comparison["control_metrics"]["preemption_count"] == {
+        "nano_vllm": 0,
+        "vllm": 0,
+        "headline_metric": False,
+        "purpose": (
+            "diagnoses recomputation and validates prompt-token conservation"
+        ),
+    }
 
 
 def test_compare_rejects_graph_or_trace_mismatch(tmp_path, model_identity):
-    trace = _trace("in-batch", model_identity)
+    trace = _trace("lpm", model_identity)
     trace_path = tmp_path / "trace.json"
     nano_path = tmp_path / "nano.json"
     vllm_path = tmp_path / "vllm.json"
@@ -399,7 +507,7 @@ def test_compare_rejects_graph_or_trace_mismatch(tmp_path, model_identity):
     vllm["trace"]["sha256"] = trace_sha256
     vllm["runtime"]["benchmark_script_sha256"] = "b" * 64
     benchmark._write_json(vllm_path, vllm)
-    with pytest.raises(ValueError, match="different benchmark scripts"):
+    with pytest.raises(ValueError, match="benchmark script SHA"):
         benchmark._compare_results(trace_path, nano_path, vllm_path)
 
 
@@ -454,7 +562,7 @@ def test_compare_rejects_runtime_config_manifest_or_gpu_drift(
     tmp_path,
     model_identity,
 ):
-    trace = _trace("in-batch", model_identity)
+    trace = _trace("lpm", model_identity)
     trace_path = tmp_path / "trace.json"
     nano_path = tmp_path / "nano.json"
     vllm_path = tmp_path / "vllm.json"
@@ -487,7 +595,7 @@ def test_compare_rejects_nano_prompt_accounting_drift(
     tmp_path,
     model_identity,
 ):
-    trace = _trace("in-batch", model_identity)
+    trace = _trace("lpm", model_identity)
     trace_path = tmp_path / "trace.json"
     nano_path = tmp_path / "nano.json"
     vllm_path = tmp_path / "vllm.json"
@@ -496,11 +604,125 @@ def test_compare_rejects_nano_prompt_accounting_drift(
     nano = _fake_result("nano-vllm", trace_path, trace, trace_sha256)
     vllm = _fake_result("vllm", trace_path, trace, trace_sha256)
     nano["metrics"]["backend_specific"]["computed_prompt_tokens"] -= 1
+    nano["metrics"]["comparable"]["computed_prompt_tokens"] -= 1
     benchmark._write_json(nano_path, nano)
     benchmark._write_json(vllm_path, vllm)
 
     with pytest.raises(ValueError, match="prompt-token conservation"):
         benchmark._compare_results(trace_path, nano_path, vllm_path)
+
+
+def test_compare_rejects_same_step_workload(
+    tmp_path,
+    model_identity,
+):
+    trace = _trace("in-batch", model_identity)
+    trace_path = tmp_path / "trace.json"
+    benchmark._write_json(trace_path, trace)
+
+    with pytest.raises(ValueError, match="limited to the LPM workload"):
+        benchmark._compare_results(
+            trace_path,
+            tmp_path / "nano.json",
+            tmp_path / "vllm.json",
+        )
+
+
+def test_metric_comparison_handles_zero_vllm_evictions():
+    both_zero = benchmark._metric_comparison(
+        "cached_block_eviction_count",
+        "blocks",
+        True,
+        0,
+        0,
+    )
+    nonzero_nano = benchmark._metric_comparison(
+        "cached_block_eviction_count",
+        "blocks",
+        True,
+        3,
+        0,
+    )
+
+    assert both_zero["nano_over_vllm_ratio"] is None
+    assert both_zero["nano_relative_delta_percent"] is None
+    assert both_zero["relative_baseline_status"] == "both_zero"
+    assert nonzero_nano["relative_baseline_status"] == (
+        "undefined_zero_vllm_baseline"
+    )
+    assert json.dumps(both_zero, allow_nan=False)
+
+
+def test_compare_rejects_vllm_observer_evidence_drift(
+    tmp_path,
+    model_identity,
+):
+    trace = _trace("lpm", model_identity)
+    trace_path = tmp_path / "trace.json"
+    nano_path = tmp_path / "nano.json"
+    vllm_path = tmp_path / "vllm.json"
+    benchmark._write_json(trace_path, trace)
+    trace_sha256 = benchmark._sha256_file(trace_path)
+    nano = _fake_result("nano-vllm", trace_path, trace, trace_sha256)
+    vllm = _fake_result("vllm", trace_path, trace, trace_sha256)
+    vllm["metrics"]["backend_specific"]["observer_window"]["delta"][
+        "cached_block_eviction_count"
+    ] += 1
+    benchmark._write_json(nano_path, nano)
+    benchmark._write_json(vllm_path, vllm)
+
+    with pytest.raises(ValueError, match="observer window disagrees"):
+        benchmark._compare_results(trace_path, nano_path, vllm_path)
+
+
+@pytest.mark.parametrize("bad_value", [-1, True, 1.5, None])
+def test_compare_rejects_invalid_exact_count(
+    tmp_path,
+    model_identity,
+    bad_value,
+):
+    trace = _trace("lpm", model_identity)
+    trace_path = tmp_path / "trace.json"
+    nano_path = tmp_path / "nano.json"
+    vllm_path = tmp_path / "vllm.json"
+    benchmark._write_json(trace_path, trace)
+    trace_sha256 = benchmark._sha256_file(trace_path)
+    nano = _fake_result("nano-vllm", trace_path, trace, trace_sha256)
+    vllm = _fake_result("vllm", trace_path, trace, trace_sha256)
+    nano["metrics"]["comparable"]["cached_block_eviction_count"] = bad_value
+    benchmark._write_json(nano_path, nano)
+    benchmark._write_json(vllm_path, vllm)
+
+    with pytest.raises(ValueError, match="invalid metric"):
+        benchmark._compare_results(trace_path, nano_path, vllm_path)
+
+
+def test_vllm_counter_helpers_require_unique_monotonic_counter():
+    metrics = [
+        SimpleNamespace(
+            name="vllm:prompt_tokens_by_source",
+            labels={
+                "model_name": "/model",
+                "engine": "0",
+                "source": "local_compute",
+            },
+            value=42,
+        )
+    ]
+    llm = SimpleNamespace(get_metrics=lambda: metrics)
+
+    assert benchmark._vllm_counter_value(
+        llm,
+        "vllm:prompt_tokens_by_source",
+        {"engine": "0", "source": "local_compute"},
+    ) == 42
+    assert benchmark._vllm_counter_window(
+        "counter", {"engine": "0"}, 10, 14
+    )["delta"] == 4
+    with pytest.raises(RuntimeError, match="not monotonic"):
+        benchmark._vllm_counter_window(
+            "counter", {"engine": "0"}, 14, 10
+        )
 
 
 def test_vllm_shutdown_uses_engine_core_lifecycle():

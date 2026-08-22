@@ -21,10 +21,11 @@ same immutable request trace.  A typical workflow is::
         --vllm-result benchmark_results/eager_compare/lpm.vllm.json \
         --output benchmark_results/eager_compare/lpm.comparison.json
 
-Cross-framework results are limited to P95 TTFT, request throughput, and total
-batch completion time.  Backend-native cache and recomputation counters are
-recorded separately because vLLM does not expose definitions equivalent to
-nano-vllm's scheduler instrumentation.
+The LPM comparison reports five definition-aligned metrics: locally computed
+prompt tokens, allocation-pressure cached-block evictions, P95 TTFT, request
+throughput, and total batch completion time.  A benchmark-only read-only vLLM
+scheduler observer supplies the two counters without changing FCFS ordering or
+admission behavior.
 """
 
 from __future__ import annotations
@@ -47,8 +48,22 @@ from pathlib import Path
 from typing import Any, Iterable, Sequence as TypingSequence
 
 
-SCHEMA_VERSION = 2
+SCHEMA_VERSION = 3
 BLOCK_SIZE = 16
+CROSS_FRAMEWORK_WORKLOAD_KEY = "lpm"
+VLLM_SCHEDULER_CLASS = "bench_vllm_metrics.InstrumentedScheduler"
+VLLM_METRICS_HELPER_PATH = Path(__file__).with_name("bench_vllm_metrics.py")
+VLLM_NULL_BLOCK_COUNT = 1
+COMPARABLE_METRIC_SPECS: tuple[tuple[str, str, bool], ...] = (
+    ("computed_prompt_tokens", "tokens", True),
+    ("cached_block_eviction_count", "blocks", True),
+    ("p95_ttft_ms", "ms", True),
+    ("request_throughput_rps", "requests/s", False),
+    ("total_batch_completion_s", "s", True),
+)
+COMPARABLE_METRIC_NAMES = tuple(
+    name for name, _unit, _lower_is_better in COMPARABLE_METRIC_SPECS
+)
 TARGET_MODEL_SHAPE = {
     "hidden_size": 1024,
     "num_hidden_layers": 28,
@@ -659,6 +674,15 @@ def _load_trace(path: Path) -> tuple[dict[str, Any], str]:
     return trace, _sha256_bytes(raw)
 
 
+def _require_cross_framework_lpm(trace: dict[str, Any]) -> None:
+    if trace.get("workload_key") != CROSS_FRAMEWORK_WORKLOAD_KEY:
+        raise ValueError(
+            "the five-metric cross-framework comparison is intentionally "
+            "limited to the LPM workload; same-step prefix reuse remains an "
+            "internal functional ablation"
+        )
+
+
 def _request_manifest(trace: dict[str, Any]) -> list[dict[str, Any]]:
     manifest = []
     for phase in trace["phases"]:
@@ -772,11 +796,20 @@ def _vllm_engine_kwargs(
         "enable_prefix_caching": True,
         "enable_chunked_prefill": True,
         "block_size": contract["block_size"],
-        "num_gpu_blocks_override": contract["logical_kv_blocks"],
+        # vLLM permanently reserves block 0 as a null block.  Add that
+        # implementation-only block so both engines expose the same usable
+        # logical capacity from the trace.
+        "num_gpu_blocks_override": (
+            contract["logical_kv_blocks"] + VLLM_NULL_BLOCK_COUNT
+        ),
         "max_model_len": contract["max_model_len"],
         "max_num_batched_tokens": contract["max_num_batched_tokens"],
         "max_num_seqs": contract["max_num_seqs"],
         "attention_config": {"backend": "FLASHINFER"},
+        # The default V1 configuration selects AsyncScheduler.  The observer
+        # subclasses that implementation and keeps its default FCFS policy.
+        "async_scheduling": True,
+        "scheduler_cls": VLLM_SCHEDULER_CLASS,
         "disable_log_stats": False,
     }
 
@@ -956,6 +989,7 @@ def _run_nano(
     from nanovllm.engine.block_manager import BlockManager
 
     trace, trace_sha256 = _load_trace(trace_path)
+    _require_cross_framework_lpm(trace)
     model_path = _validate_model_files(trace)
     if not torch.cuda.is_available():
         raise RuntimeError("run-nano requires an NVIDIA CUDA GPU")
@@ -1088,6 +1122,7 @@ def _run_nano(
                     "seed": trace["seed"],
                     "seed_reset_before_measured": True,
                     "physical_kv_blocks": physical_blocks,
+                    "usable_logical_kv_blocks": logical_blocks,
                     "logical_kv_blocks": logical_blocks,
                     "scheduler": (
                         "nano-vllm cache-aware "
@@ -1098,6 +1133,12 @@ def _run_nano(
                 },
                 "metrics": {
                     "comparable": {
+                        "computed_prompt_tokens": internal_metrics[
+                            "computed_prompt_tokens"
+                        ],
+                        "cached_block_eviction_count": internal_metrics[
+                            "cached_block_eviction_count"
+                        ],
                         "p95_ttft_ms": _percentile(
                             [row["ttft_ms"] for row in request_rows],
                             95.0,
@@ -1107,9 +1148,10 @@ def _run_nano(
                     },
                     "backend_specific": {
                         "definition": (
-                            "nano-vllm SchedulerMetrics with disjoint initial "
-                            "persistent and same-step hit accounting; not compared "
-                            "to vLLM backend-native cache counters"
+                            "nano-vLLM SchedulerMetrics. Computed prompt tokens "
+                            "and allocation-pressure cached-block evictions use "
+                            "the same definitions as the vLLM benchmark observer; "
+                            "the initial/same-step hit breakdown remains native."
                         ),
                         **internal_metrics,
                     },
@@ -1168,6 +1210,10 @@ def _validate_vllm_runtime_config(llm: Any, trace: dict[str, Any]) -> dict[str, 
     contract = trace["execution_contract"]
     expected_model = Path(trace["model"]["path"]).resolve()
     backend_name = getattr(attention.backend, "name", None)
+    configured_blocks = cache.num_gpu_blocks
+    expected_configured_blocks = (
+        contract["logical_kv_blocks"] + VLLM_NULL_BLOCK_COUNT
+    )
     checks = {
         "model_path": Path(model.model).resolve() == expected_model,
         "tokenizer_path": Path(model.tokenizer).resolve() == expected_model,
@@ -1181,8 +1227,13 @@ def _validate_vllm_runtime_config(llm: Any, trace: dict[str, Any]) -> dict[str, 
         "dtype_bfloat16": str(model.dtype) == "torch.bfloat16",
         "prefix_caching": cache.enable_prefix_caching is True,
         "block_size": cache.block_size == contract["block_size"],
-        "logical_kv_blocks_override": (
-            cache.num_gpu_blocks_override == contract["logical_kv_blocks"]
+        "configured_kv_blocks_override": (
+            cache.num_gpu_blocks_override == expected_configured_blocks
+        ),
+        "equal_usable_kv_capacity": (
+            configured_blocks == expected_configured_blocks
+            and configured_blocks - VLLM_NULL_BLOCK_COUNT
+            == contract["logical_kv_blocks"]
         ),
         "chunked_prefill": scheduler.enable_chunked_prefill is True,
         "max_model_len": model.max_model_len == contract["max_model_len"],
@@ -1194,7 +1245,13 @@ def _validate_vllm_runtime_config(llm: Any, trace: dict[str, Any]) -> dict[str, 
         "tensor_parallel_size": (
             parallel.tensor_parallel_size == contract["tensor_parallel_size"]
         ),
-        "default_fcfs_scheduler": scheduler.policy == "fcfs",
+        "single_data_parallel_engine": parallel.data_parallel_size == 1,
+        "single_pipeline_stage": parallel.pipeline_parallel_size == 1,
+        "default_fcfs_policy": scheduler.policy == "fcfs",
+        "default_async_scheduling": scheduler.async_scheduling is True,
+        "read_only_scheduler_observer": (
+            scheduler.scheduler_cls == VLLM_SCHEDULER_CLASS
+        ),
         "flashinfer_attention": backend_name == "FLASHINFER",
     }
     if not all(checks.values()):
@@ -1233,6 +1290,120 @@ def _shutdown_vllm(llm: Any) -> None:
     shutdown()
 
 
+def _vllm_counter_value(
+    llm: Any,
+    name: str,
+    required_labels: dict[str, str],
+) -> int:
+    matches = []
+    for metric in llm.get_metrics():
+        labels = getattr(metric, "labels", {})
+        if (
+            getattr(metric, "name", None) == name
+            and all(labels.get(key) == value for key, value in required_labels.items())
+        ):
+            matches.append(metric)
+    if len(matches) != 1:
+        raise RuntimeError(
+            f"expected exactly one vLLM counter {name} with labels "
+            f"{required_labels}, got {len(matches)}"
+        )
+    value = getattr(matches[0], "value", None)
+    if type(value) is not int or value < 0:
+        raise RuntimeError(f"vLLM counter {name} has invalid value {value!r}")
+    return value
+
+
+def _vllm_counter_window(
+    name: str,
+    labels: dict[str, str],
+    before: int,
+    after: int,
+) -> dict[str, Any]:
+    if type(before) is not int or type(after) is not int or after < before:
+        raise RuntimeError(f"vLLM counter {name} is not monotonic")
+    return {
+        "metric_name": name,
+        "labels": labels,
+        "before": before,
+        "after": after,
+        "delta": after - before,
+    }
+
+
+def _vllm_observer_snapshot(llm: Any) -> dict[str, Any]:
+    from bench_vllm_metrics import (
+        PROTOCOL_VERSION,
+        SCHEDULER_CLASS,
+        SNAPSHOT_METHOD,
+    )
+
+    if SCHEDULER_CLASS != VLLM_SCHEDULER_CLASS:
+        raise RuntimeError("vLLM observer scheduler class constant drifted")
+    raw = llm.llm_engine.engine_core.call_utility(SNAPSHOT_METHOD)
+    if not isinstance(raw, dict):
+        raise RuntimeError("vLLM observer returned a non-object snapshot")
+    if raw.get("protocol_version") != PROTOCOL_VERSION:
+        raise RuntimeError("vLLM observer protocol mismatch")
+    if raw.get("async_scheduler") is not True:
+        raise RuntimeError("vLLM observer changed the default async scheduler")
+    if raw.get("block_pool_observer_installed") is not True:
+        raise RuntimeError("vLLM block-pool observer is not installed")
+    for name in (
+        "observer_pid",
+        "computed_prompt_tokens",
+        "cached_block_eviction_count",
+        "allocated_block_count",
+        "preemption_count",
+        "scheduler_step_count",
+    ):
+        value = raw.get(name)
+        if type(value) is not int or value < 0:
+            raise RuntimeError(f"vLLM observer returned invalid {name}")
+    if raw["observer_pid"] <= 0:
+        raise RuntimeError("vLLM observer did not report its process")
+    return raw
+
+
+def _vllm_observer_window(
+    before: dict[str, Any],
+    after: dict[str, Any],
+) -> dict[str, Any]:
+    for name in (
+        "protocol_version",
+        "observer_pid",
+        "async_scheduler",
+        "block_pool_observer_installed",
+    ):
+        if before.get(name) != after.get(name):
+            raise RuntimeError(f"vLLM observer identity changed during {name}")
+    deltas = {}
+    for name in (
+        "computed_prompt_tokens",
+        "cached_block_eviction_count",
+        "allocated_block_count",
+        "preemption_count",
+        "scheduler_step_count",
+    ):
+        before_value = before[name]
+        after_value = after[name]
+        if after_value < before_value:
+            raise RuntimeError(f"vLLM observer counter {name} is not monotonic")
+        deltas[name] = after_value - before_value
+    if deltas["scheduler_step_count"] <= 0:
+        raise RuntimeError("vLLM observer recorded no measured scheduler steps")
+    if (
+        deltas["cached_block_eviction_count"]
+        > deltas["allocated_block_count"]
+    ):
+        raise RuntimeError("vLLM observed more evictions than allocations")
+    return {
+        "before": before,
+        "after": after,
+        "delta": deltas,
+    }
+
+
 def _run_vllm(
     trace_path: Path,
     gpu_memory_utilization: float,
@@ -1251,6 +1422,7 @@ def _run_vllm(
     from vllm import LLM, SamplingParams
 
     trace, trace_sha256 = _load_trace(trace_path)
+    _require_cross_framework_lpm(trace)
     model_path = _validate_model_files(trace)
     if not torch.cuda.is_available():
         raise RuntimeError("run-vllm requires an NVIDIA CUDA GPU")
@@ -1261,6 +1433,16 @@ def _run_vllm(
         kwargs = _vllm_engine_kwargs(trace, gpu_memory_utilization)
         llm = LLM(model=str(model_path), **kwargs)
         fairness_checks = _validate_vllm_runtime_config(llm, trace)
+        cache_config = llm.llm_engine.vllm_config.cache_config
+        configured_blocks = int(cache_config.num_gpu_blocks)
+        usable_blocks = configured_blocks - VLLM_NULL_BLOCK_COUNT
+        logical_blocks = trace["execution_contract"]["logical_kv_blocks"]
+        if usable_blocks != logical_blocks:
+            raise AssertionError(
+                "vLLM usable KV capacity differs from the trace: "
+                f"configured={configured_blocks}, usable={usable_blocks}, "
+                f"required={logical_blocks}"
+            )
 
         priming_rows = []
         for phase in _priming_phases(trace):
@@ -1276,20 +1458,24 @@ def _run_vllm(
                 priming_rows.append(
                     {
                         "request_id": request["request_id"],
-                        "prompt_sha256": _prompt_sha256(request["input_token_ids"]),
+                        "prompt_sha256": _prompt_sha256(
+                            request["input_token_ids"]
+                        ),
                         "output_tokens": output_tokens,
-                        "reported_num_cached_tokens": outputs[0].num_cached_tokens,
+                        "reported_num_cached_tokens": (
+                            outputs[0].num_cached_tokens
+                        ),
                     }
                 )
 
-        # Priming advances random generators.  Reset every vLLM worker and the host
-        # before measured arrivals, matching nano-vllm's measured-phase seed reset.
+        # Priming advances random generators. Reset every vLLM worker and the
+        # host before measured arrivals, matching nano-vLLM's seed reset.
         llm.collective_rpc(_reset_vllm_worker_seed, args=(trace["seed"],))
         torch.manual_seed(trace["seed"])
         torch.cuda.manual_seed_all(trace["seed"])
         measured = _measured_phase(trace)["requests"]
-        # Level-0 sleep keeps model/KV allocations and the primed prefix cache, but
-        # pauses scheduling while every measured request is enqueued in trace order.
+        # Level-0 sleep keeps model/KV allocations and the primed prefix cache,
+        # but pauses scheduling while every measured request is enqueued.
         llm.sleep(level=0)
         engine_request_ids = llm.enqueue(
             [_vllm_prompt(request) for request in measured],
@@ -1303,12 +1489,80 @@ def _run_vllm(
             for request_id in engine_request_ids
         ]
         trace_by_output_id = dict(zip(output_request_ids, measured))
+        if len(trace_by_output_id) != len(measured):
+            raise AssertionError("vLLM generated duplicate external request IDs")
+
+        local_compute_labels = {"engine": "0", "source": "local_compute"}
+        preemption_labels = {"engine": "0"}
+        observer_before = _vllm_observer_snapshot(llm)
+        local_compute_before = _vllm_counter_value(
+            llm,
+            "vllm:prompt_tokens_by_source",
+            local_compute_labels,
+        )
+        preemptions_before = _vllm_counter_value(
+            llm,
+            "vllm:num_preemptions",
+            preemption_labels,
+        )
+
         torch.cuda.synchronize()
         phase_started_at = time.monotonic()
         llm.wake_up(tags=["scheduling"])
         outputs = llm.wait_for_completion(use_tqdm=False)
         torch.cuda.synchronize()
         phase_ended_at = time.monotonic()
+
+        # Utility and Prometheus snapshots are intentionally outside the timed
+        # interval. The direct observer delta is authoritative; vLLM's native
+        # counters provide an independent no-preemption cross-check.
+        observer_after = _vllm_observer_snapshot(llm)
+        observer_window = _vllm_observer_window(
+            observer_before,
+            observer_after,
+        )
+        local_compute_after = _vllm_counter_value(
+            llm,
+            "vllm:prompt_tokens_by_source",
+            local_compute_labels,
+        )
+        preemptions_after = _vllm_counter_value(
+            llm,
+            "vllm:num_preemptions",
+            preemption_labels,
+        )
+        local_compute_window = _vllm_counter_window(
+            "vllm:prompt_tokens_by_source",
+            local_compute_labels,
+            local_compute_before,
+            local_compute_after,
+        )
+        preemption_window = _vllm_counter_window(
+            "vllm:num_preemptions",
+            preemption_labels,
+            preemptions_before,
+            preemptions_after,
+        )
+        observed = observer_window["delta"]
+        computed_prompt_tokens = observed["computed_prompt_tokens"]
+        cached_block_evictions = observed["cached_block_eviction_count"]
+        preemption_count = observed["preemption_count"]
+        if preemption_window["delta"] != preemption_count:
+            raise RuntimeError(
+                "vLLM direct and native preemption counters disagree"
+            )
+        if local_compute_window["delta"] > computed_prompt_tokens:
+            raise RuntimeError(
+                "vLLM native local-compute counter exceeds direct prompt work"
+            )
+        if (
+            preemption_count == 0
+            and local_compute_window["delta"] != computed_prompt_tokens
+        ):
+            raise RuntimeError(
+                "vLLM direct and native prompt-compute counters disagree "
+                "without preemption"
+            )
 
         output_by_id = {output.request_id: output for output in outputs}
         if output_by_id.keys() != trace_by_output_id.keys():
@@ -1328,7 +1582,8 @@ def _run_vllm(
             metrics = output.metrics
             if metrics is None:
                 raise RuntimeError(
-                    "vLLM returned no RequestStateStats; disable_log_stats must be False"
+                    "vLLM returned no RequestStateStats; "
+                    "disable_log_stats must be False"
                 )
             if metrics.first_token_ts <= 0.0 or metrics.last_token_ts <= 0.0:
                 raise RuntimeError("vLLM returned incomplete request timestamps")
@@ -1336,11 +1591,14 @@ def _run_vllm(
             completion_ms = (metrics.last_token_ts - phase_started_at) * 1e3
             if ttft_ms < 0.0 or completion_ms < ttft_ms:
                 raise RuntimeError(
-                    "vLLM request timestamps are incompatible with host monotonic time"
+                    "vLLM request timestamps are incompatible with host "
+                    "monotonic time"
                 )
             cached_tokens = int(output.num_cached_tokens or 0)
+            if cached_tokens < 0 or cached_tokens > request["prompt_len"]:
+                raise RuntimeError("vLLM reported an invalid cached-token count")
             reported_cached_tokens += cached_tokens
-            derived_prompt_tokens += max(request["prompt_len"] - cached_tokens, 0)
+            derived_prompt_tokens += request["prompt_len"] - cached_tokens
             request_rows.append(
                 {
                     "request_id": request["request_id"],
@@ -1348,7 +1606,9 @@ def _run_vllm(
                     "vllm_output_request_id": output_id,
                     "arrival_order": request["arrival_order"],
                     "prompt_len": request["prompt_len"],
-                    "prompt_sha256": _prompt_sha256(request["input_token_ids"]),
+                    "prompt_sha256": _prompt_sha256(
+                        request["input_token_ids"]
+                    ),
                     "requested_output_len": request["output_len"],
                     "output_tokens": output_tokens,
                     "ttft_ms": ttft_ms,
@@ -1357,6 +1617,20 @@ def _run_vllm(
                     "reported_num_cached_tokens": cached_tokens,
                 }
             )
+        total_prompt_tokens = sum(
+            request["prompt_len"] for request in measured
+        )
+        if reported_cached_tokens + derived_prompt_tokens != total_prompt_tokens:
+            raise RuntimeError("vLLM output prompt-token accounting is invalid")
+        if (
+            preemption_count == 0
+            and derived_prompt_tokens != computed_prompt_tokens
+        ):
+            raise RuntimeError(
+                "vLLM prompt-minus-cache diagnostic disagrees with exact "
+                "computed work without preemption"
+            )
+
         elapsed_s = phase_ended_at - phase_started_at
         result = _base_result("vllm", trace_path, trace_sha256, trace)
         result.update(
@@ -1370,36 +1644,99 @@ def _run_vllm(
                     "requested": {"model": str(model_path), **kwargs},
                     "fairness_checks": fairness_checks,
                     "actual_model_path": str(
-                        Path(llm.llm_engine.vllm_config.model_config.model).resolve()
+                        Path(
+                            llm.llm_engine.vllm_config.model_config.model
+                        ).resolve()
                     ),
                     "actual_tokenizer_path": str(
-                        Path(llm.llm_engine.vllm_config.model_config.tokenizer).resolve()
+                        Path(
+                            llm.llm_engine.vllm_config.model_config.tokenizer
+                        ).resolve()
                     ),
-                    "actual_dtype": str(llm.llm_engine.vllm_config.model_config.dtype),
+                    "actual_dtype": str(
+                        llm.llm_engine.vllm_config.model_config.dtype
+                    ),
                     "seed": trace["seed"],
                     "seed_reset_before_measured": True,
-                    "seed_reset_transport": "trusted local collective_rpc callback",
-                    "scheduler": "vLLM default eager scheduler",
+                    "seed_reset_transport": (
+                        "trusted local collective_rpc callback"
+                    ),
+                    "configured_physical_kv_blocks": configured_blocks,
+                    "reserved_null_blocks": VLLM_NULL_BLOCK_COUNT,
+                    "usable_logical_kv_blocks": usable_blocks,
+                    "scheduler": (
+                        "vLLM default async FCFS policy with a read-only "
+                        "benchmark counter observer"
+                    ),
+                    "async_scheduling": True,
+                    "counter_instrumentation": {
+                        "benchmark_only": True,
+                        "scheduler_class": VLLM_SCHEDULER_CLASS,
+                        "inherits_default_async_scheduler": True,
+                        "engine_core_snapshot_method": (
+                            "_nanovllm_benchmark_metrics_snapshot"
+                        ),
+                        "source_path": str(
+                            VLLM_METRICS_HELPER_PATH.resolve()
+                        ),
+                        "source_sha256": _sha256_file(
+                            VLLM_METRICS_HELPER_PATH
+                        ),
+                        "protocol_version": observer_after[
+                            "protocol_version"
+                        ],
+                        "changes_scheduling_policy": False,
+                    },
                     "cudagraph_mode": "none",
                     "enforce_eager": True,
                 },
                 "metrics": {
                     "comparable": {
+                        "computed_prompt_tokens": computed_prompt_tokens,
+                        "cached_block_eviction_count": (
+                            cached_block_evictions
+                        ),
                         "p95_ttft_ms": _percentile(
                             [row["ttft_ms"] for row in request_rows],
                             95.0,
                         ),
-                        "request_throughput_rps": len(request_rows) / elapsed_s,
+                        "request_throughput_rps": (
+                            len(request_rows) / elapsed_s
+                        ),
                         "total_batch_completion_s": elapsed_s,
                     },
                     "backend_specific": {
                         "definition": (
-                            "vLLM RequestOutput.num_cached_tokens and a derived "
-                            "prompt-minus-cache count; not definition-equivalent to "
-                            "nano-vllm SchedulerMetrics"
+                            "Direct read-only scheduler observation. Computed "
+                            "prompt tokens sum scheduled prompt intervals, "
+                            "including recomputation. Cached-block evictions "
+                            "count physical allocation reuse that removes at "
+                            "least one live prefix-cache mapping."
                         ),
-                        "reported_cached_prompt_tokens": reported_cached_tokens,
-                        "derived_computed_prompt_tokens": derived_prompt_tokens,
+                        "computed_prompt_tokens": computed_prompt_tokens,
+                        "cached_block_eviction_count": (
+                            cached_block_evictions
+                        ),
+                        "preemption_count": preemption_count,
+                        "allocated_block_count": observed[
+                            "allocated_block_count"
+                        ],
+                        "scheduler_step_count": observed[
+                            "scheduler_step_count"
+                        ],
+                        "observer_pid": observer_after["observer_pid"],
+                        "total_prompt_tokens": total_prompt_tokens,
+                        "reported_cached_prompt_tokens": (
+                            reported_cached_tokens
+                        ),
+                        "derived_computed_prompt_tokens": (
+                            derived_prompt_tokens
+                        ),
+                        "observer_window": observer_window,
+                        "native_counter_windows": {
+                            "local_compute": local_compute_window,
+                            "preemptions": preemption_window,
+                        },
                     },
                 },
                 "priming_requests": priming_rows,
@@ -1419,7 +1756,6 @@ def _run_vllm(
             dist.destroy_process_group()
         if torch.cuda.is_available():
             torch.cuda.empty_cache()
-
 
 def _validate_recorded_runtime(result: dict[str, Any], framework: str) -> None:
     runtime = result.get("runtime", {})
@@ -1447,6 +1783,10 @@ def _validate_recorded_runtime(result: dict[str, Any], framework: str) -> None:
     flashinfer = runtime.get("flashinfer", {})
     if not isinstance(flashinfer.get("version"), str) or not flashinfer["version"]:
         raise ValueError(f"{framework} result did not record FlashInfer version")
+    if runtime["benchmark_script_sha256"] != _sha256_file(Path(__file__)):
+        raise ValueError(
+            f"{framework} result benchmark script SHA does not match this source"
+        )
     framework_metadata = runtime.get("framework", {})
     git = framework_metadata.get("git", {})
     if not isinstance(git.get("head"), str) or not git["head"]:
@@ -1465,6 +1805,8 @@ def _validate_nano_backend_metrics(
         "same_step_hit_tokens",
         "claimed_prefix_tokens",
         "computed_prompt_tokens",
+        "cached_block_eviction_count",
+        "preemption_count",
         "total_prompt_tokens",
         "same_step_reused_request_count",
         "same_step_reused_blocks",
@@ -1485,6 +1827,20 @@ def _validate_nano_backend_metrics(
     total_prompt_tokens = sum(
         request["prompt_len"] for request in measured_requests
     )
+    comparable = result["metrics"]["comparable"]
+    if comparable["computed_prompt_tokens"] != computed_tokens:
+        raise ValueError(
+            "nano-vllm comparable computed prompt tokens differ from "
+            "scheduler instrumentation"
+        )
+    if (
+        comparable["cached_block_eviction_count"]
+        != metrics["cached_block_eviction_count"]
+    ):
+        raise ValueError(
+            "nano-vllm comparable cached-block evictions differ from "
+            "scheduler instrumentation"
+        )
     if metrics["total_prompt_tokens"] != total_prompt_tokens:
         raise ValueError("nano-vllm total_prompt_tokens differs from the trace")
     if initial_tokens + same_step_tokens != claimed_tokens:
@@ -1563,6 +1919,188 @@ def _validate_nano_backend_metrics(
         raise ValueError("nano-vllm prefill admission counts are invalid")
 
 
+def _validate_vllm_backend_metrics(
+    result: dict[str, Any],
+    measured_requests: list[dict[str, Any]],
+) -> None:
+    backend = result.get("metrics", {}).get("backend_specific", {})
+    comparable = result.get("metrics", {}).get("comparable", {})
+    required_counts = (
+        "computed_prompt_tokens",
+        "cached_block_eviction_count",
+        "preemption_count",
+        "allocated_block_count",
+        "scheduler_step_count",
+        "observer_pid",
+        "total_prompt_tokens",
+        "reported_cached_prompt_tokens",
+        "derived_computed_prompt_tokens",
+    )
+    for name in required_counts:
+        value = backend.get(name)
+        if type(value) is not int or value < 0:
+            raise ValueError(
+                f"vLLM backend metric {name} must be a non-negative integer"
+            )
+    if backend["observer_pid"] <= 0 or backend["scheduler_step_count"] <= 0:
+        raise ValueError("vLLM observer did not run in the measured phase")
+    if (
+        backend["cached_block_eviction_count"]
+        > backend["allocated_block_count"]
+    ):
+        raise ValueError("vLLM evictions exceed measured physical allocations")
+    for name in ("computed_prompt_tokens", "cached_block_eviction_count"):
+        if comparable.get(name) != backend[name]:
+            raise ValueError(
+                f"vLLM comparable {name} differs from exact observer evidence"
+            )
+
+    total_prompt_tokens = sum(
+        request["prompt_len"] for request in measured_requests
+    )
+    if backend["total_prompt_tokens"] != total_prompt_tokens:
+        raise ValueError("vLLM total prompt tokens differ from the trace")
+    rows = result.get("requests", [])
+    reported_cached_tokens = 0
+    for row in rows:
+        cached_tokens = row.get("reported_num_cached_tokens")
+        if (
+            type(cached_tokens) is not int
+            or cached_tokens < 0
+            or cached_tokens > row["prompt_len"]
+            or cached_tokens % BLOCK_SIZE != 0
+        ):
+            raise ValueError("vLLM request has invalid reported cached tokens")
+        reported_cached_tokens += cached_tokens
+    derived_prompt_tokens = sum(
+        row["prompt_len"] - row["reported_num_cached_tokens"]
+        for row in rows
+    )
+    if reported_cached_tokens != backend["reported_cached_prompt_tokens"]:
+        raise ValueError("vLLM request cached-token rows do not match summary")
+    if derived_prompt_tokens != backend["derived_computed_prompt_tokens"]:
+        raise ValueError("vLLM prompt-minus-cache rows do not match summary")
+    if reported_cached_tokens + derived_prompt_tokens != total_prompt_tokens:
+        raise ValueError("vLLM output prompt-token conservation failed")
+
+    observer_window = backend.get("observer_window")
+    if not isinstance(observer_window, dict):
+        raise ValueError("vLLM result has no exact observer window")
+    before = observer_window.get("before")
+    after = observer_window.get("after")
+    delta = observer_window.get("delta")
+    if not all(isinstance(item, dict) for item in (before, after, delta)):
+        raise ValueError("vLLM observer window is malformed")
+    identity_fields = (
+        "protocol_version",
+        "observer_pid",
+        "async_scheduler",
+        "block_pool_observer_installed",
+    )
+    if any(before.get(name) != after.get(name) for name in identity_fields):
+        raise ValueError("vLLM observer identity changed during measurement")
+    if (
+        after.get("protocol_version") != 1
+        or after.get("observer_pid") != backend["observer_pid"]
+        or after.get("async_scheduler") is not True
+        or after.get("block_pool_observer_installed") is not True
+    ):
+        raise ValueError("vLLM observer identity evidence is invalid")
+    observer_counts = (
+        "computed_prompt_tokens",
+        "cached_block_eviction_count",
+        "allocated_block_count",
+        "preemption_count",
+        "scheduler_step_count",
+    )
+    for name in observer_counts:
+        before_value = before.get(name)
+        after_value = after.get(name)
+        delta_value = delta.get(name)
+        if (
+            type(before_value) is not int
+            or type(after_value) is not int
+            or type(delta_value) is not int
+            or before_value < 0
+            or after_value < before_value
+            or delta_value != after_value - before_value
+            or delta_value != backend[name]
+        ):
+            raise ValueError(f"vLLM observer window disagrees for {name}")
+
+    native_windows = backend.get("native_counter_windows")
+    if not isinstance(native_windows, dict):
+        raise ValueError("vLLM result has no native counter cross-check")
+    expected_native = {
+        "local_compute": (
+            "vllm:prompt_tokens_by_source",
+            {"engine": "0", "source": "local_compute"},
+        ),
+        "preemptions": ("vllm:num_preemptions", {"engine": "0"}),
+    }
+    native_deltas: dict[str, int] = {}
+    for key, (metric_name, labels) in expected_native.items():
+        window = native_windows.get(key)
+        if not isinstance(window, dict):
+            raise ValueError(f"vLLM native counter window {key} is missing")
+        before_value = window.get("before")
+        after_value = window.get("after")
+        delta_value = window.get("delta")
+        if (
+            window.get("metric_name") != metric_name
+            or window.get("labels") != labels
+            or type(before_value) is not int
+            or type(after_value) is not int
+            or type(delta_value) is not int
+            or before_value < 0
+            or after_value < before_value
+            or delta_value != after_value - before_value
+        ):
+            raise ValueError(f"vLLM native counter window {key} is invalid")
+        native_deltas[key] = delta_value
+    if native_deltas["preemptions"] != backend["preemption_count"]:
+        raise ValueError("vLLM native and direct preemption counts disagree")
+    if native_deltas["local_compute"] > backend["computed_prompt_tokens"]:
+        raise ValueError("vLLM native local compute exceeds direct prompt work")
+    if backend["preemption_count"] == 0:
+        if not (
+            native_deltas["local_compute"]
+            == backend["computed_prompt_tokens"]
+            == derived_prompt_tokens
+        ):
+            raise ValueError(
+                "vLLM no-preemption prompt-compute conservation failed"
+            )
+
+    engine = result.get("engine", {})
+    logical_blocks = result["execution_contract"]["logical_kv_blocks"]
+    if (
+        engine.get("configured_physical_kv_blocks")
+        != logical_blocks + VLLM_NULL_BLOCK_COUNT
+        or engine.get("reserved_null_blocks") != VLLM_NULL_BLOCK_COUNT
+        or engine.get("usable_logical_kv_blocks") != logical_blocks
+        or engine.get("async_scheduling") is not True
+    ):
+        raise ValueError("vLLM effective KV capacity or scheduler mode is invalid")
+    instrumentation = engine.get("counter_instrumentation")
+    if not isinstance(instrumentation, dict):
+        raise ValueError("vLLM result has no counter instrumentation provenance")
+    expected_instrumentation = {
+        "benchmark_only": True,
+        "scheduler_class": VLLM_SCHEDULER_CLASS,
+        "inherits_default_async_scheduler": True,
+        "engine_core_snapshot_method": (
+            "_nanovllm_benchmark_metrics_snapshot"
+        ),
+        "source_path": str(VLLM_METRICS_HELPER_PATH.resolve()),
+        "source_sha256": _sha256_file(VLLM_METRICS_HELPER_PATH),
+        "protocol_version": 1,
+        "changes_scheduling_policy": False,
+    }
+    if instrumentation != expected_instrumentation:
+        raise ValueError("vLLM counter instrumentation provenance is invalid")
+
+
 def _validate_result(
     result: dict[str, Any],
     framework: str,
@@ -1612,6 +2150,14 @@ def _validate_result(
         raise ValueError(f"{framework} result has no runtime fairness checks")
     if any(value is not True for value in fairness_checks.values()):
         raise ValueError(f"{framework} runtime fairness checks failed")
+    logical_blocks = trace["execution_contract"]["logical_kv_blocks"]
+    if engine.get("usable_logical_kv_blocks") != logical_blocks:
+        raise ValueError(f"{framework} usable KV capacity differs from trace")
+    if (
+        framework == "nano-vllm"
+        and engine.get("logical_kv_blocks") != logical_blocks
+    ):
+        raise ValueError("nano-vllm logical KV capacity differs from trace")
 
     requested = engine.get("requested")
     if not isinstance(requested, dict):
@@ -1678,12 +2224,24 @@ def _validate_result(
             raise ValueError(f"{framework} request has invalid timing")
 
     comparable = result.get("metrics", {}).get("comparable", {})
+    if not isinstance(comparable, dict) or set(comparable) != set(
+        COMPARABLE_METRIC_NAMES
+    ):
+        raise ValueError(
+            f"{framework} result must contain exactly the five comparable metrics"
+        )
+    for name in ("computed_prompt_tokens", "cached_block_eviction_count"):
+        value = comparable[name]
+        if type(value) is not int or value < 0:
+            raise ValueError(f"{framework} result has invalid metric {name}")
+    if comparable["computed_prompt_tokens"] <= 0:
+        raise ValueError(f"{framework} computed no measured prompt tokens")
     for name in (
         "p95_ttft_ms",
         "request_throughput_rps",
         "total_batch_completion_s",
     ):
-        value = comparable.get(name)
+        value = comparable[name]
         if (
             type(value) not in (int, float)
             or not math.isfinite(value)
@@ -1705,6 +2263,8 @@ def _validate_result(
         raise ValueError(f"{framework} completion time ends before a request")
     if framework == "nano-vllm":
         _validate_nano_backend_metrics(result, measured)
+    else:
+        _validate_vllm_backend_metrics(result, measured)
     _validate_recorded_runtime(result, framework)
 
 
@@ -1712,19 +2272,34 @@ def _metric_comparison(
     name: str,
     unit: str,
     lower_is_better: bool,
-    nano_value: float,
-    vllm_value: float,
+    nano_value: int | float,
+    vllm_value: int | float,
 ) -> dict[str, Any]:
+    if vllm_value == 0:
+        ratio = None
+        relative_delta = None
+        improvement = None
+        baseline_status = (
+            "both_zero" if nano_value == 0 else "undefined_zero_vllm_baseline"
+        )
+    else:
+        ratio = nano_value / vllm_value
+        relative_delta = (nano_value - vllm_value) / vllm_value * 100.0
+        improvement = (
+            -relative_delta if lower_is_better else relative_delta
+        )
+        baseline_status = "defined"
     return {
         "metric": name,
         "unit": unit,
         "lower_is_better": lower_is_better,
         "nano_vllm": nano_value,
         "vllm": vllm_value,
-        "nano_over_vllm_ratio": nano_value / vllm_value,
-        "nano_relative_delta_percent": (
-            (nano_value - vllm_value) / vllm_value * 100.0
-        ),
+        "absolute_delta": nano_value - vllm_value,
+        "nano_over_vllm_ratio": ratio,
+        "nano_relative_delta_percent": relative_delta,
+        "nano_improvement_percent": improvement,
+        "relative_baseline_status": baseline_status,
     }
 
 
@@ -1734,6 +2309,7 @@ def _compare_results(
     vllm_result_path: Path,
 ) -> dict[str, Any]:
     trace, trace_sha256 = _load_trace(trace_path)
+    _require_cross_framework_lpm(trace)
     nano = json.loads(nano_result_path.read_text(encoding="utf-8"))
     vllm = json.loads(vllm_result_path.read_text(encoding="utf-8"))
     _validate_result(nano, "nano-vllm", trace, trace_sha256)
@@ -1758,35 +2334,55 @@ def _compare_results(
         raise ValueError(
             "cross-framework results were not recorded on identical GPU hardware"
         )
+    for name in ("torch", "torch_cuda"):
+        if nano["runtime"][name] != vllm["runtime"][name]:
+            raise ValueError(f"cross-framework results used different {name}")
+    nano_utilization = nano["engine"]["requested"][
+        "gpu_memory_utilization"
+    ]
+    vllm_utilization = vllm["engine"]["requested"][
+        "gpu_memory_utilization"
+    ]
+    if nano_utilization != vllm_utilization:
+        raise ValueError(
+            "cross-framework results used different GPU memory utilization"
+        )
+    logical_blocks = trace["execution_contract"]["logical_kv_blocks"]
+    if not (
+        nano["engine"]["usable_logical_kv_blocks"]
+        == vllm["engine"]["usable_logical_kv_blocks"]
+        == logical_blocks
+    ):
+        raise ValueError("cross-framework usable KV capacity is not identical")
+
     nano_metrics = nano["metrics"]["comparable"]
     vllm_metrics = vllm["metrics"]["comparable"]
     table = [
         _metric_comparison(
-            "p95_ttft_ms",
-            "ms",
-            True,
-            nano_metrics["p95_ttft_ms"],
-            vllm_metrics["p95_ttft_ms"],
-        ),
-        _metric_comparison(
-            "request_throughput_rps",
-            "requests/s",
-            False,
-            nano_metrics["request_throughput_rps"],
-            vllm_metrics["request_throughput_rps"],
-        ),
-        _metric_comparison(
-            "total_batch_completion_s",
-            "s",
-            True,
-            nano_metrics["total_batch_completion_s"],
-            vllm_metrics["total_batch_completion_s"],
-        ),
+            name,
+            unit,
+            lower_is_better,
+            nano_metrics[name],
+            vllm_metrics[name],
+        )
+        for name, unit, lower_is_better in COMPARABLE_METRIC_SPECS
     ]
+    nano_flashinfer = nano["runtime"]["flashinfer"]
+    vllm_flashinfer = vllm["runtime"]["flashinfer"]
+    same_flashinfer_version = (
+        nano_flashinfer.get("version") == vllm_flashinfer.get("version")
+        and nano_flashinfer.get("cubin_package")
+        == vllm_flashinfer.get("cubin_package")
+        and nano_flashinfer.get("jit_cache_package")
+        == vllm_flashinfer.get("jit_cache_package")
+    )
+    nano_backend = nano["metrics"]["backend_specific"]
+    vllm_backend = vllm["metrics"]["backend_specific"]
     return {
         "schema_version": SCHEMA_VERSION,
-        "comparison_kind": "eager_only_cross_framework",
+        "comparison_kind": "eager_only_cross_framework_five_metric",
         "workload": trace["workload"],
+        "workload_key": trace["workload_key"],
         "trace": _trace_proof(trace_path, trace_sha256, trace),
         "fairness": {
             "same_trace": True,
@@ -1801,37 +2397,67 @@ def _compare_results(
             "same_model_path": True,
             "same_model_and_tokenizer_file_hashes": True,
             "same_benchmark_script_sha256": True,
+            "same_torch": True,
+            "same_torch_cuda": True,
+            "same_gpu_memory_utilization": True,
+            "gpu_memory_utilization": nano_utilization,
+            "same_effective_usable_kv_capacity": True,
+            "nano_usable_kv_blocks": logical_blocks,
+            "vllm_configured_kv_blocks": (
+                vllm["engine"]["configured_physical_kv_blocks"]
+            ),
+            "vllm_reserved_null_blocks": VLLM_NULL_BLOCK_COUNT,
+            "vllm_usable_kv_blocks": logical_blocks,
+            "definition_aligned_prompt_compute_counter": True,
+            "definition_aligned_cached_block_eviction_counter": True,
+            "vllm_observer_changes_scheduling_policy": False,
             "dtype": trace["execution_contract"]["dtype"],
             "both_eager_only": True,
             "prefix_caching_enabled": True,
             "chunked_prefill_enabled": True,
             "block_size": BLOCK_SIZE,
-            "logical_kv_blocks": trace["execution_contract"][
-                "logical_kv_blocks"
-            ],
+            "logical_kv_blocks": logical_blocks,
             "max_num_seqs": trace["execution_contract"]["max_num_seqs"],
             "max_num_batched_tokens": trace["execution_contract"][
                 "max_num_batched_tokens"
             ],
+            "same_flashinfer_package_stack": same_flashinfer_version,
+            "nano_flashinfer": nano_flashinfer,
+            "vllm_flashinfer": vllm_flashinfer,
         },
         "comparable_metrics": table,
+        "control_metrics": {
+            "preemption_count": {
+                "nano_vllm": nano_backend["preemption_count"],
+                "vllm": vllm_backend["preemption_count"],
+                "headline_metric": False,
+                "purpose": (
+                    "diagnoses recomputation and validates prompt-token "
+                    "conservation"
+                ),
+            }
+        },
         "backend_specific_metrics": {
-            "nano_vllm": nano["metrics"]["backend_specific"],
-            "vllm": vllm["metrics"]["backend_specific"],
-            "cross_framework_comparable": False,
+            "nano_vllm": nano_backend,
+            "vllm": vllm_backend,
+            "headline_comparable_fields": list(COMPARABLE_METRIC_NAMES),
+            "native_breakdowns_are_diagnostics": True,
         },
         "interpretation_boundary": (
-            "Compare Cache-Aware Scheduler behavior with vLLM's default eager "
-            "scheduler only for this shared-prefix target workload.  Do not "
-            "generalize these numbers to all workloads or attribute them to "
-            "CUDA Graph."
+            "This compares complete eager-only engines on one fixed "
+            "long-prefix KV-pressure trace: nano-vLLM with cache-aware LPM "
+            "versus vLLM's default async FCFS policy. The two exact mechanism "
+            "counters are definition-aligned. Timing remains an end-to-end "
+            "framework result; if FlashInfer package stacks differ, it must not "
+            "be attributed solely to the scheduling algorithm. Use the internal "
+            "nano-vLLM LPM-versus-FCFS ablation for causal LPM claims, and do "
+            "not generalize this single workload or attribute it to CUDA Graph."
         ),
         "inputs": {
             "nano_result": str(nano_result_path.resolve()),
             "vllm_result": str(vllm_result_path.resolve()),
         },
     }
-
 
 def _parse_args(argv: TypingSequence[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)

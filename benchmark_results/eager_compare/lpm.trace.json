@@ -73560,7 +73560,7 @@
       "submission": "simultaneous_batch"
     }
   ],
-  "schema_version": 2,
+  "schema_version": 3,
   "seed": 2026,
   "trace_kind": "eager_only_cross_framework",
   "workload": "shared_long_prefix_kv_pressure",
