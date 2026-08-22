@@ -180,9 +180,15 @@ class Qwen3DecoderLayer(nn.Module):
         if residual is None:
             hidden_states, residual = self.input_layernorm(hidden_states), hidden_states
         else:
-            hidden_states, residual = self.input_layernorm(hidden_states, residual)
+            hidden_states, residual = self.input_layernorm.forward_inplace(
+                hidden_states,
+                residual,
+            )
         hidden_states = self.self_attn(positions, hidden_states)
-        hidden_states, residual = self.post_attention_layernorm(hidden_states, residual)
+        hidden_states, residual = self.post_attention_layernorm.forward_inplace(
+            hidden_states,
+            residual,
+        )
         hidden_states = self.mlp(hidden_states)
         return hidden_states, residual
 
@@ -220,7 +226,7 @@ class Qwen3Model(nn.Module):
         residual = None
         for layer in self.layers:
             hidden_states, residual = layer(positions, hidden_states, residual)
-        hidden_states, _ = self.norm(hidden_states, residual)
+        hidden_states, _ = self.norm.forward_inplace(hidden_states, residual)
         return hidden_states
 
 

@@ -8,7 +8,7 @@ from pathlib import Path
 
 
 OPERATOR_OVERRIDES = {
-    "silu_and_mul": "custom_cuda",
+    "silu_and_mul": "adaptive_cuda",
     "rms_norm": "flashinfer",
     "fused_add_rms_norm": "flashinfer",
     "rotary_embedding": "flashinfer",
@@ -94,9 +94,18 @@ def collect_provider_bindings(llm) -> dict[str, set[str]]:
 def print_runtime_configuration(llm) -> None:
     config = llm.config
     bindings = collect_provider_bindings(llm)
+    attention_backend = llm.model_runner.attention_backend
     print("\nEnabled runtime configuration")
     print(f"  attention backend : {type(llm.model_runner.attention_backend).__name__}")
     print(f"  attention mode    : {config.attention_mode}")
+    if hasattr(attention_backend, "mixed_attention_available"):
+        print(
+            "  holistic mixed    : "
+            f"{attention_backend.mixed_attention_available}"
+        )
+        reason = attention_backend.mixed_attention_unavailable_reason
+        if reason:
+            print(f"  mixed fallback    : {reason}")
     print(f"  KV-cache page size: {config.kvcache_block_size}")
     print(f"  chunked prefill   : {config.chunked_prefill}")
     print(f"  batch token budget: {config.max_num_batched_tokens}")
@@ -137,6 +146,11 @@ def print_cudagraph_stats(llm) -> None:
     print(f"  eager fallback steps   : {stats['eager_fallback_steps']}")
     print(f"  graph bucket hits      : {stats['graph_bucket_hits']}")
     print(f"  graph bucket misses    : {stats['graph_bucket_misses']}")
+    attention_backend = llm.model_runner.attention_backend
+    if hasattr(attention_backend, "route_counts"):
+        print("  eager attention routes :")
+        for route, count in attention_backend.route_counts.items():
+            print(f"    {route:<16}: {count}")
 
 
 def print_outputs(label: str, prompts: list[str], outputs: list[dict]) -> None:
@@ -206,7 +220,28 @@ def main() -> None:
         "Answer accurately and concisely.",
         "What is a paged KV cache?",
     )
-    all_prompts = [prime_prompt, cached_prompt, cold_prompt]
+    long_cold_context = (
+        "This request has an unrelated uncached context and is intentionally "
+        "long enough to require chunked prefill."
+    )
+    long_cold_prompt = build_chat_prompt(
+        tokenizer,
+        long_cold_context,
+        "Explain why bounded batches help an inference engine.",
+    )
+    while len(tokenizer.encode(long_cold_prompt)) <= args.batch_tokens:
+        long_cold_context = f"{long_cold_context} {long_cold_context}"
+        long_cold_prompt = build_chat_prompt(
+            tokenizer,
+            long_cold_context,
+            "Explain why bounded batches help an inference engine.",
+        )
+    all_prompts = [
+        prime_prompt,
+        cached_prompt,
+        cold_prompt,
+        long_cold_prompt,
+    ]
     prompt_lengths = [len(tokenizer.encode(prompt)) for prompt in all_prompts]
     longest_request = max(prompt_lengths) + args.max_tokens
     if longest_request > args.max_model_len:
@@ -261,9 +296,12 @@ def main() -> None:
         )
         print_cache_stats(llm, "After priming")
 
-        # The cold request is submitted first on purpose. Cache-aware LPM can
-        # rank the second request first because it reuses the primed prefix.
-        ranked_prompts = [cold_prompt, cached_prompt]
+        # The short cold request is submitted first on purpose. Cache-aware
+        # LPM can rank the second request first because it reuses the primed
+        # prefix. The third request exceeds the batch budget, so after the two
+        # short prefills finish its resumed chunk runs beside their decode
+        # tokens and exercises the explicit MIXED attention route.
+        ranked_prompts = [cold_prompt, cached_prompt, long_cold_prompt]
         ranked_outputs = llm.generate(
             ranked_prompts,
             sampling_params,

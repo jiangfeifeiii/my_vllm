@@ -178,6 +178,54 @@ class FlashInferOperatorTest(TestCase):
                 )
                 torch.testing.assert_close(output, expected, atol=atol, rtol=rtol)
 
+    def test_fused_add_rms_norm_internal_fast_path_reuses_inputs(self):
+        for dtype in self.dtypes:
+            with self.subTest(dtype=dtype):
+                torch.manual_seed(108)
+                layer = RMSNorm(
+                    128,
+                    eps=1e-6,
+                    operator_resolver=_resolver(
+                        "rms_norm", "fused_add_rms_norm", dtype=dtype
+                    ),
+                ).cuda().to(dtype=dtype)
+                layer.weight.data.copy_(
+                    torch.linspace(
+                        0.8, 1.2, 128, device="cuda", dtype=dtype
+                    )
+                )
+                x = torch.randn(11, 128, device="cuda", dtype=dtype)
+                residual = torch.randn(
+                    11, 128, device="cuda", dtype=dtype
+                )
+                original_x = x.clone()
+                original_residual = residual.clone()
+
+                output, new_residual = layer.forward_inplace(x, residual)
+                expected_residual = (
+                    original_x.float() + original_residual.float()
+                ).to(dtype)
+                summed = expected_residual.float()
+                expected = summed * torch.rsqrt(
+                    summed.square().mean(-1, keepdim=True) + layer.eps
+                )
+                expected = expected.to(dtype).mul(layer.weight)
+                atol, rtol = _tolerances(dtype)
+
+                self.assertEqual(output.data_ptr(), x.data_ptr())
+                self.assertEqual(
+                    new_residual.data_ptr(), residual.data_ptr()
+                )
+                torch.testing.assert_close(
+                    new_residual,
+                    expected_residual,
+                    atol=atol,
+                    rtol=rtol,
+                )
+                torch.testing.assert_close(
+                    output, expected, atol=atol, rtol=rtol
+                )
+
     def test_rope_matches_neox_reference_and_is_out_of_place(self):
         for dtype in self.dtypes:
             with self.subTest(dtype=dtype):

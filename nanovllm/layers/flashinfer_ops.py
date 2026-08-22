@@ -82,6 +82,11 @@ def _require_flashinfer(function: Callable | None, operator: str) -> Callable:
     return function
 
 
+def get_flashinfer_silu_and_mul() -> Callable:
+    """Return the validated FlashInfer SiLU-and-multiply callable."""
+    return _require_flashinfer(_flashinfer_silu_and_mul, "silu_and_mul")
+
+
 @register_operator(
     "silu_and_mul",
     "flashinfer",
@@ -89,7 +94,7 @@ def _require_flashinfer(function: Callable | None, operator: str) -> Callable:
     priority=200,
 )
 def _bind_flashinfer_silu_and_mul(_owner):
-    operation = _require_flashinfer(_flashinfer_silu_and_mul, "silu_and_mul")
+    operation = get_flashinfer_silu_and_mul()
 
     def forward(x: torch.Tensor) -> torch.Tensor:
         return operation(x)
@@ -131,6 +136,17 @@ def _bind_flashinfer_fused_add_rms_norm(owner):
         new_residual = residual.clone()
         operation(normalized, new_residual, owner.weight, eps=owner.eps)
         return normalized, new_residual
+
+    def forward_inplace(
+        x: torch.Tensor,
+        residual: torch.Tensor,
+    ) -> tuple[torch.Tensor, torch.Tensor]:
+        operation(x, residual, owner.weight, eps=owner.eps)
+        return x, residual
+
+    # Keep the registered provider's public call out-of-place. Qwen3 uses the
+    # attached callable only where both incoming tensor values are dead.
+    setattr(forward, "_nanovllm_inplace", forward_inplace)
 
     return forward
 

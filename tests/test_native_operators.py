@@ -37,6 +37,23 @@ def _tolerances(dtype: torch.dtype) -> tuple[float, float]:
 class NativeOperatorTest(TestCase):
     dtypes = (torch.float16, torch.bfloat16)
 
+    def test_fused_add_rmsnorm_internal_fast_path_safely_falls_back(self):
+        with _eager_native_methods((RMSNorm, "add_rms_forward")):
+            norm = RMSNorm(16, eps=1e-6).to(dtype=torch.bfloat16)
+            x = torch.randn(6, 16, dtype=torch.bfloat16)
+            residual = torch.randn(6, 16, dtype=torch.bfloat16)
+            original_x = x.clone()
+            original_residual = residual.clone()
+
+            output, new_residual = norm.forward_inplace(x, residual)
+
+            self.assertTrue(torch.equal(x, original_x))
+            self.assertTrue(torch.equal(residual, original_residual))
+            self.assertNotEqual(output.data_ptr(), x.data_ptr())
+            self.assertNotEqual(
+                new_residual.data_ptr(), residual.data_ptr()
+            )
+
     def test_silu_and_mul_value_shape_dtype_and_input_aliasing(self):
         with _eager_native_methods((SiluAndMul, "native_forward")):
             for dtype in self.dtypes:

@@ -32,6 +32,11 @@ class RMSNorm(nn.Module):
         self.add_rms_provider_name, self.add_rms_impl = resolver.bind(
             "fused_add_rms_norm", self, hidden_size=hidden_size
         )
+        self.add_rms_inplace_impl = getattr(
+            self.add_rms_impl,
+            "_nanovllm_inplace",
+            self.add_rms_impl,
+        )
 
     @torch.compile
     def rms_forward(
@@ -68,3 +73,11 @@ class RMSNorm(nn.Module):
             return self.rms_impl(x)
         else:
             return self.add_rms_impl(x, residual)
+
+    def forward_inplace(
+        self,
+        x: torch.Tensor,
+        residual: torch.Tensor,
+    ) -> tuple[torch.Tensor, torch.Tensor]:
+        """Use the provider fast path when both input values are dead."""
+        return self.add_rms_inplace_impl(x, residual)

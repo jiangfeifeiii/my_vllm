@@ -34,6 +34,7 @@ The current registrations are intentionally minimal:
 | `silu_and_mul` | `native_torch` | 100 | `torch.nn.functional.silu` + multiply |
 | `silu_and_mul` | `flashinfer` | 200 | FlashInfer, CUDA FP16/BF16 |
 | `silu_and_mul` | `custom_cuda` | 400 | In-tree `nanovllm._C`, CUDA FP16/BF16 |
+| `silu_and_mul` | `adaptive_cuda` | 500 | Shape/device dispatch between FlashInfer and the in-tree CUDA kernel |
 | `rms_norm` | `native_torch` | 100 | PyTorch reference path |
 | `rms_norm` | `flashinfer` | 200 | FlashInfer, CUDA FP16/BF16 |
 | `fused_add_rms_norm` | `native_torch` | 100 | PyTorch reference path |
@@ -42,15 +43,25 @@ The current registrations are intentionally minimal:
 | `rotary_embedding` | `flashinfer` | 200 | FlashInfer, CUDA FP16/BF16 |
 | `kv_cache_store` | `native_triton` | 300 | In-tree Triton NHD cache store |
 
-Thus, on a supported CUDA FP16/BF16 installation, `auto` uses the custom CUDA
-kernel for SiLU-and-multiply, FlashInfer for normalization and RoPE, and the
-native Triton KV-cache store. If the custom extension is not loadable,
-SiLU-and-multiply falls through to FlashInfer and then `native_torch`.
+Thus, on a supported CUDA FP16/BF16 installation, `auto` binds one adaptive
+SiLU callable at layer construction. On the measured RTX 5070, BF16 Qwen3
+width 6144 uses the in-tree CUDA kernel below 128 rows and FlashInfer from 128
+rows onward. This is a targeted serving heuristic: measurements show a
+material custom-kernel advantage for decode-sized batches and a FlashInfer
+advantage as token parallelism grows, while the exact boundary is sensitive to
+clock/workload conditions. The rule is therefore not extrapolated: other
+devices, dtypes, and FlashInfer-compatible widths use FlashInfer, while
+incompatible layouts fall back to the in-tree CUDA kernel. This adds only a
+host-side shape branch in the token loop, not a registry lookup.
 
-Linear projections are deliberately excluded. `ReplicatedLinear`, column-
-parallel, QKV, and row-parallel layers continue to call
-`torch.nn.functional.linear`; row-parallel output is reduced with the existing
-tensor-parallel collective. Provider work must not silently change GEMM.
+Normalization and RoPE use FlashInfer. The public fused-add RMSNorm provider
+keeps its out-of-place contract, while Qwen3 calls an internal in-place form
+only where both incoming tensor values are dead, eliminating two clones per
+eligible normalization. KV-cache store remains the existing Triton kernel:
+FlashInfer append requires different batch/position metadata and would disturb
+the `slot_mapping=-1` CUDA Graph contract. Linear projections remain
+`torch.nn.functional.linear` (cuBLAS); changing GEMM or sampling would require
+broader model/RNG semantics work and is outside this low-risk optimization.
 
 ## Attention backends and B16 cache
 
@@ -85,7 +96,8 @@ holistic `BatchAttention` wrapper for mixed batches. That upstream wrapper owns
 pinned host workspace. Split mode never creates it. FlashInfer 0.6.17 hard-
 codes two cooperative CTAs per SM for head dimension 128; this launch is not
 valid on the tested SM120 RTX 5070, so SM120 is explicitly capability-gated to
-the zero-copy split fallback instead of failing during serving.
+the zero-copy split fallback instead of failing during serving. Head dimensions
+above FlashInfer's 256-element limit use the same fallback.
 
 The scheduler naturally emits a packed batch in this order:
 
@@ -238,7 +250,7 @@ inside each layer consumes that stable state.
 The captured transformer-body boundary is:
 
 ```text
-embedding -> all transformer layers (unified attention and MLP) -> final RMSNorm
+embedding -> all transformer layers (decode attention and MLP) -> final RMSNorm
 ```
 
 Logit computation/LM head, sampling, scheduler postprocessing, request

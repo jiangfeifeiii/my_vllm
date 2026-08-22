@@ -84,10 +84,12 @@ outputs = llm.generate(["Hello, Nano-vLLM."], params)
 print(outputs[0]["text"])
 ```
 
-`attention_mode="unified"` is the default and sends the complete packed
-`[Prefill | Decode]` query through one paged prefill call. Select `"split"`
-to use phase-specialized prefill/decode wrappers writing directly into one
-reusable output buffer; the split path does not concatenate temporary outputs.
+`attention_mode="unified"` is the default. `PURE_PREFILL` uses FlashInfer's
+paged-prefill wrapper, `PURE_DECODE` uses its paged-decode wrapper, and `MIXED`
+uses holistic `BatchAttention` where FlashInfer/device capability allows it.
+Unsupported mixed configurations (including FlashInfer 0.6.17 on SM120) fall
+back to phase-specialized prefill/decode calls writing directly into one
+reusable output buffer. Select `"split"` to force that zero-copy mixed path.
 
 ### Prefix-cache admission
 
@@ -156,9 +158,9 @@ Eager.
 
 For an eligible replay, FlashInfer planning and metadata/input updates happen
 outside the graph. Replay captures the embedding, transformer layers (including
-unified attention and MLP), and final RMSNorm. Logit computation, sampling,
-scheduler/postprocessing, and prefix-cache management remain outside. Runtime
-coverage can be inspected without a profiler:
+specialized decode attention and MLP), and final RMSNorm. Logit computation,
+sampling, scheduler/postprocessing, and prefix-cache management remain outside.
+Runtime coverage can be inspected without a profiler:
 
 ```python
 stats = llm.model_runner.get_cudagraph_stats()
@@ -180,8 +182,8 @@ results. Cross-framework scheduler comparisons must disable CUDA Graph in both
 engines.
 
 For a runnable example that explicitly enables FlashInfer attention, 16-token
-KV pages, chunked prefill, cache-aware LPM, the custom CUDA SiLU kernel, and
-the FlashInfer normalization/RoPE providers, run:
+KV pages, chunked prefill, cache-aware LPM, adaptive SiLU dispatch, and the
+FlashInfer normalization/RoPE providers, run:
 
 ```bash
 # Eager (also the example's default)
@@ -197,8 +199,10 @@ python example_optimized.py \
   --cudagraph-mode full_decode_only
 ```
 
-The example prints the captured buckets, capture time, additional graph memory,
-replay/fallback step counts, and exact-bucket hit/miss counts. Add `--debug` to
+The example prints holistic-mixed availability/fallback, eager attention-route
+counts, captured buckets, capture time, additional graph memory, and replay/
+fallback hit counts. Its default workload includes a resumed long prefill next
+to active decode requests, so the `MIXED` route is exercised. Add `--debug` to
 pause in `pdb` immediately before the first generation call.
 
 Operator selection defaults to `auto`: the highest-priority supported
@@ -209,7 +213,7 @@ without changing layer code:
 llm = LLM(
     "/absolute/path/to/Qwen3-model",
     operator_overrides={
-        "silu_and_mul": "custom_cuda",
+        "silu_and_mul": "adaptive_cuda",
         "rms_norm": "flashinfer",
         "fused_add_rms_norm": "flashinfer",
         "rotary_embedding": "flashinfer",
@@ -220,7 +224,11 @@ llm = LLM(
 
 `native` is an alias for the highest-priority supported provider whose name
 starts with `native_`; exact names such as `native_torch`, `native_triton`,
-`flashinfer`, and `custom_cuda` are also accepted.
+`flashinfer`, `custom_cuda`, and `adaptive_cuda` are also accepted. On the
+measured RTX 5070 BF16/Qwen3 width-6144 path, adaptive dispatch uses the custom
+kernel below 128 rows and FlashInfer from 128 rows; other compatible devices,
+dtypes, and widths default to FlashInfer instead of extrapolating that targeted
+serving heuristic.
 
 ### Legacy rollback
 
@@ -329,8 +337,22 @@ workload constants, then run `python bench.py`.
 `bench_scheduler.py` runs one real Qwen3-0.6B scheduler variant per process.
 It keeps the physical GPU cache intact while replacing only the idle
 scheduler's `BlockManager` with the recorded logical block limit.
-`bench_attention.py` is model-free and measures the exact Qwen3-8B attention
-shape. Both scripts fail rather than silently changing the requested workload.
+`bench_attention_dispatch.py` measures the current production backend on the
+Qwen3-0.6B `P128 + D3` mixed shape and records the asserted route, capability
+fallback, exact page metadata, raw repeats, numerical difference, and source
+provenance. The older `bench_attention.py` is a model-free raw-wrapper study
+for a Qwen3-8B shape. These scripts fail rather than silently changing the
+requested workload.
+
+Run the current production Qwen3-0.6B mixed-dispatch protocol with:
+
+```bash
+# On the documented SM120 stack, make the safety fallback an explicit assert.
+PYTHONHASHSEED=0 FLASHINFER_CUDA_ARCH_LIST=12.0f FLASHINFER_DISABLE_JIT=1 \
+/tmp/nanovllm-flashinfer-env/bin/python bench_attention_dispatch.py \
+  --output /tmp/nanovllm-attention-dispatch.json \
+  --expected-route mixed_split
+```
 
 These are the exact commands used for the checked-in RTX 5070 results:
 
@@ -427,6 +449,12 @@ Raw request/step traces:
 
 #### Attention
 
+> Historical scope: the table below predates commit `7c68108` and benchmarks
+> raw FlashInfer wrappers for a Qwen3-8B shape. Its “Unified” method means the
+> retired all-batch paged-prefill route; it is not a measurement of the current
+> BatchType-aware production backend and must not be used as a current dispatch
+> performance claim.
+
 Planning and caller-owned outputs are outside timed regions for Unified and
 Zero-copy Split. Old Split exactly retains phase-output allocation plus
 `torch.cat`; CUDA Events capture device work and the cat copy, not host-only
@@ -441,14 +469,20 @@ allocator latency. Each raw value below is the per-call mean of 500 iterations.
 | same | Old Split + Cat | 7.494944, 7.503711, 7.498145, 7.499335, 7.500299 | 7.499335 | 7.494944 / 7.503711 | +3.77% | 0.00001526 |
 | same | Zero-copy Split | 7.501136, 7.500984, 7.488825, 7.498392, 7.503362 | 7.500984 | 7.488825 / 7.503362 | +3.79% | 0.00001526 |
 
-The pure-decode diagnostic also favored the paged-prefill wrapper on this
-stack: 7.167986 vs 7.213052 ms in Case 1 and 7.196127 vs 7.426044 ms in Case 2.
-Unified therefore remains the default; Split is retained as an explicit
-phase-specialized path, not presented as a speedup. Full metadata, correctness,
-execution order, and diagnostic repeats are in
+The historical pure-decode diagnostic also favored the paged-prefill wrapper
+on that old Qwen3-8B workload: 7.167986 vs 7.213052 ms in Case 1 and 7.196127
+vs 7.426044 ms in Case 2. Current pure-decode dispatch instead uses the
+dedicated decode wrapper. Full metadata, correctness, execution order, and
+diagnostic repeats for the historical experiment are in
 [`attention.json`](benchmark_results/rtx5070/attention.json).
 
 ### Runtime feature validation: full-decode CUDA Graph
+
+> Historical scope: the checked-in performance table below predates the
+> BatchType-aware decode-wrapper graph change in `7c68108`. Current full-model
+> eager/graph correctness and metadata freshness are covered by
+> `tests/test_cudagraph_flashinfer.py`; rerun `bench_cudagraph.py` before making
+> current performance claims.
 
 This experiment is intentionally separate from the scheduler results above and
 the cross-framework comparison below. `bench_cudagraph.py` compares only
