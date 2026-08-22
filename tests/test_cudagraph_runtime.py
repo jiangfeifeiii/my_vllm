@@ -114,6 +114,7 @@ def _decode_context(
     *,
     pages_per_request: int = 1,
     batch_type: BatchType = BatchType.PURE_DECODE,
+    trusted: bool = False,
 ):
     num_pages = batch_size * pages_per_request
     return SimpleNamespace(
@@ -127,6 +128,9 @@ def _decode_context(
         ),
         page_indices=_FakeCudaIntTensor(range(num_pages)),
         page_last_page_len=_FakeCudaIntTensor([16] * batch_size),
+        page_metadata_trusted=trusted,
+        num_pages=num_pages if trusted else None,
+        num_prefill_pages=0 if trusted else None,
         slot_mapping=_FakeCudaIntTensor(range(batch_size)),
     )
 
@@ -314,6 +318,40 @@ def test_exact_bucket_with_valid_metadata_selects_full_graph():
     assert runner._cudagraph_stats["graph_bucket_hits"] == 1
     assert runner._cudagraph_stats["graph_bucket_misses"] == 0
     assert runner._cudagraph_stats["eager_fallback_steps"] == 0
+
+
+def test_trusted_metadata_uses_host_scalars_without_device_value_reads():
+    state = _graph_state(4, page_indices_capacity=8)
+    runner = _runner(states={4: state})
+    context = _decode_context(4, pages_per_request=2, trusted=True)
+
+    with patch("torch.all", side_effect=AssertionError("device value read")):
+        mode, selected = _select(runner, context, 4)
+
+    assert mode is RuntimeExecutionMode.FULL_GRAPH
+    assert selected is state
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [("num_pages", 7), ("num_prefill_pages", 1)],
+)
+def test_trusted_metadata_rejects_host_scalar_drift(field, value):
+    state = _graph_state(4, page_indices_capacity=8)
+    runner = _runner(states={4: state})
+    context = _decode_context(4, pages_per_request=2, trusted=True)
+    setattr(context, field, value)
+
+    assert runner.graph_metadata_fits(state, context) is False
+
+
+def test_untrusted_metadata_keeps_strict_device_value_validation():
+    state = _graph_state(4, page_indices_capacity=8)
+    runner = _runner(states={4: state})
+    context = _decode_context(4, pages_per_request=2)
+    context.page_kv_indptr = _FakeCudaIntTensor([1, 3, 5, 7, 9])
+
+    assert runner.graph_metadata_fits(state, context) is False
 
 
 def test_uncaptured_exact_bucket_falls_back_but_counts_bucket_hit():

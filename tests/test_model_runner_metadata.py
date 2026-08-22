@@ -62,6 +62,7 @@ class ModelRunnerMetadataTest(TestCase):
         self.addCleanup(reset_context)
         self.runner = object.__new__(ModelRunner)
         self.runner.block_size = 16
+        self.runner.config = SimpleNamespace(attention_backend="flashinfer")
 
         self.runner.attention_backend = _BackendRecorder()
 
@@ -93,12 +94,13 @@ class ModelRunnerMetadataTest(TestCase):
             _tolist(context.slot_mapping),
             [64, 65, 66, 144, 145, 146, 147, 148],
         )
-        self.assertEqual(_tolist(context.context_lens), [19, 5])
+        self.assertIsNone(context.cu_seqlens_k)
+        self.assertIsNone(context.context_lens)
         self.assertEqual(_tolist(context.seq_need_compute_logits), [0, 1])
-        self.assertEqual(
-            context.block_tables.cpu().tolist(),
-            [[7, 4], [9, -1]],
-        )
+        self.assertIsNone(context.block_tables)
+        self.assertTrue(context.page_metadata_trusted)
+        self.assertEqual(context.num_pages, 3)
+        self.assertEqual(context.num_prefill_pages, 3)
         self.assertEqual(context.max_seqlen_q, 5)
         self.assertEqual(context.max_seqlen_k, 19)
         self.assertEqual(context.num_prefill_seqs, 2)
@@ -116,14 +118,19 @@ class ModelRunnerMetadataTest(TestCase):
 
         self.assertEqual(_tolist(input_ids), [10, 11, 12, 13])
         self.assertEqual(_tolist(positions), [0, 1, 2, 3])
-        self.assertEqual(_tolist(context.page_q_indptr), [0, 4])
-        self.assertEqual(_tolist(context.page_kv_indptr), [0, 0])
-        self.assertEqual(_tolist(context.page_indices), [])
-        self.assertEqual(_tolist(context.page_last_page_len), [0])
+        self.assertEqual(_tolist(context.cu_seqlens_q), [0, 4])
+        self.assertEqual(_tolist(context.cu_seqlens_k), [0, 4])
+        self.assertIsNone(context.page_q_indptr)
+        self.assertIsNone(context.page_kv_indptr)
+        self.assertIsNone(context.page_indices)
+        self.assertIsNone(context.page_last_page_len)
         self.assertEqual(_tolist(context.slot_mapping), [])
         self.assertEqual(_tolist(context.context_lens), [4])
         self.assertIsNone(context.seq_need_compute_logits)
         self.assertIsNone(context.block_tables)
+        self.assertFalse(context.page_metadata_trusted)
+        self.assertIsNone(context.num_pages)
+        self.assertIsNone(context.num_prefill_pages)
         self.assertEqual(context.num_prefill_seqs, 1)
         self.assertEqual(context.num_prefill_tokens, 4)
         self.assertEqual(context.num_decode_tokens, 0)
@@ -152,6 +159,12 @@ class ModelRunnerMetadataTest(TestCase):
         self.assertEqual(_tolist(context.page_indices), [2, 4, 5])
         self.assertEqual(_tolist(context.page_last_page_len), [3, 2])
         self.assertEqual(_tolist(context.slot_mapping), [32, 33, 34, 81])
+        self.assertIsNone(context.cu_seqlens_k)
+        self.assertIsNone(context.context_lens)
+        self.assertIsNone(context.block_tables)
+        self.assertTrue(context.page_metadata_trusted)
+        self.assertEqual(context.num_pages, 3)
+        self.assertEqual(context.num_prefill_pages, 1)
         self.assertEqual(context.num_prefill_seqs, 1)
         self.assertEqual(context.num_prefill_tokens, 3)
         self.assertEqual(context.num_decode_tokens, 1)
@@ -192,6 +205,31 @@ class ModelRunnerMetadataTest(TestCase):
 
         self.assertEqual(context.max_seqlen_q, 1)
         self.assertIs(context.batch_type, BatchType.PURE_DECODE)
+        self.assertTrue(context.page_metadata_trusted)
+        self.assertEqual(context.num_pages, 2)
+        self.assertEqual(context.num_prefill_pages, 0)
+
+    def test_legacy_cached_decode_builds_only_legacy_metadata(self):
+        self.runner.config.attention_backend = "legacy"
+        decode = Sequence(list(range(17)), block_size=16)
+        decode.num_cached_tokens = 16
+        decode.num_new_tokens = 1
+        decode.block_table = [3, 4]
+
+        self.runner.prepare_model_input([decode], num_prefill_seqs=0)
+        context = get_context()
+
+        self.assertEqual(_tolist(context.cu_seqlens_q), [0, 1])
+        self.assertEqual(_tolist(context.cu_seqlens_k), [0, 17])
+        self.assertEqual(_tolist(context.context_lens), [17])
+        self.assertEqual(context.block_tables.cpu().tolist(), [[3, 4]])
+        self.assertIsNone(context.page_q_indptr)
+        self.assertIsNone(context.page_kv_indptr)
+        self.assertIsNone(context.page_indices)
+        self.assertIsNone(context.page_last_page_len)
+        self.assertFalse(context.page_metadata_trusted)
+        self.assertIsNone(context.num_pages)
+        self.assertIsNone(context.num_prefill_pages)
 
     def test_all_single_token_mixed_batch_is_still_mixed(self):
         prefill = Sequence([7], block_size=16)

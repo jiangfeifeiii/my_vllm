@@ -71,12 +71,21 @@ default and is carried consistently by `Config`, `Sequence`, `BlockManager`,
 model-runner metadata, cache allocation, and FlashInfer planning.
 
 One backend instance is shared by all transformer layers. For Eager execution
-it owns one 64 MiB CUDA `uint8` workspace and two wrappers:
+it owns one zero-initialized 64 MiB CUDA `uint8` workspace and two always-
+available wrappers:
 
 - `BatchPrefillWithPagedKVCacheWrapper` for prefill query lengths of one or
   more tokens;
 - `BatchDecodeWithPagedKVCacheWrapper` for the decode suffix, where every
   sequence contributes exactly one query token.
+
+In unified mode, supported devices additionally create FlashInfer 0.6.17's
+holistic `BatchAttention` wrapper for mixed batches. That upstream wrapper owns
+384 MiB of CUDA float workspace, 8 MiB of CUDA integer workspace, and 8 MiB of
+pinned host workspace. Split mode never creates it. FlashInfer 0.6.17 hard-
+codes two cooperative CTAs per SM for head dimension 128; this launch is not
+valid on the tested SM120 RTX 5070, so SM120 is explicitly capability-gated to
+the zero-copy split fallback instead of failing during serving.
 
 The scheduler naturally emits a packed batch in this order:
 
@@ -94,21 +103,31 @@ Q/K length relationships continue to describe cache layout and metadata; they
 are not used to infer the batch type.
 
 The model runner records `num_prefill_seqs`, `num_prefill_tokens`, and
-`num_decode_tokens` while building one set of page CSR metadata. In the default
-`attention_mode="unified"`, `plan` passes the full metadata to the paged
-prefill wrapper and every layer runs the complete packed `[P | D]` query in
-one call. In `attention_mode="split"`, `plan` slices the metadata at the phase
-boundary and prepares both phase-specialized wrappers.
+`num_decode_tokens` while building one set of page CSR metadata. Eager dispatch
+uses the explicit batch type: `PURE_PREFILL` plans only the paged-prefill
+wrapper and `PURE_DECODE` plans only the paged-decode wrapper. For `MIXED`, the
+default `attention_mode="unified"` uses holistic `BatchAttention` when the
+runtime capability gate passes and otherwise uses the zero-copy specialized
+composition. `attention_mode="split"` always uses that composition.
 
-The split path owns a lazily grown contiguous output buffer. Prefill and decode
-write directly into its `[P]` and `[D]` slices with FlashInfer's `out=` API;
-there are no per-phase output tensors, `torch.cat`, or full-output copy. The
-decode slice is zeroed before use for compatibility with FlashInfer backends
-that require zero-initialized caller output. This scratch reuse relies on the
-current inference-only, sequential layer execution on one CUDA stream. Pure
-prefill, pure decode, and mixed batches use the same backend object. GQA is
-represented by independent query-head and KV-head counts, with `num_q_heads`
-divisible by `num_kv_heads`.
+All Eager routes write through FlashInfer's `out=` API into one lazily grown
+contiguous output buffer. The mixed split route writes its `[P]` and `[D]`
+slices directly; there are no per-phase output tensors, `torch.cat`, or full-
+output copy. Holistic mixed attention also reuses one FP32 LSE buffer. The
+standard AOT decode backend overwrites caller output, so it does not zero that
+slice on every layer; only the shared float workspace is zero-initialized
+before first decode use. Scratch reuse relies on inference-only, sequential
+layer execution on one CUDA stream. GQA is represented by independent query-
+head and KV-head counts, with `num_q_heads` divisible by `num_kv_heads`.
+
+For cached FlashInfer serving, `ModelRunner` transfers only page CSR metadata,
+slot mappings, query offsets, and logits indices. Legacy-only KV offsets,
+context lengths, and dense block tables are not constructed. Cacheless startup
+warmup retains the ragged FlashAttention metadata, while the legacy backend
+builds only its legacy representation. ModelRunner-produced page metadata also
+carries trusted host page counts, avoiding device `.item()`/`torch.all()`
+round trips in per-step planning without weakening validation for externally
+constructed contexts.
 
 The cacheless model-memory warmup occurs before KV allocation and uses the
 existing ragged `flash_attn_varlen_func` path. Split mode also allocates its
@@ -131,9 +150,10 @@ attention.
 The scheduler decides which requests run and how many tokens they receive. It
 does not select an attention topology or CUDA Graph route. From the scheduler's
 prefill/decode boundary, `ModelRunner.prepare_model_input` records
-`Context.batch_type`. The attention mode chooses unified or phase-specialized
-attention, while the CUDA Graph policy determines whether the transformer body
-is eligible for replay. These are independent decisions.
+`Context.batch_type`. The attention mode controls whether mixed batches may use
+holistic attention or are forced to the phase-specialized composition, while
+the CUDA Graph policy determines whether the transformer body is eligible for
+replay. These are independent decisions.
 
 The user-facing `CUDAGraphPolicy` has two values: `NONE` and
 `FULL_DECODE_ONLY`. `enforce_eager=True` is retained as a compatibility mapping
@@ -164,7 +184,7 @@ rejecting the scheduled batch.
 
 For each retained bucket, `ModelRunner` owns one `DecodeGraphState` containing:
 
-- one graph-aware FlashInfer unified wrapper with a fixed batch size;
+- one graph-aware FlashInfer decode wrapper with a fixed batch size;
 - fixed-address input IDs, positions, slot mapping, and page CSR buffers;
 - fixed-address attention and final hidden-state outputs;
 - page-index capacity and the captured `torch.cuda.CUDAGraph`.

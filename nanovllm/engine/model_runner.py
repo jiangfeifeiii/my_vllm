@@ -416,38 +416,54 @@ class ModelRunner:
             for seq in seqs[num_prefill_seqs:]
         ), "decode suffix must contain one query token per sequence"
 
+        use_flashinfer = self.config.attention_backend == "flashinfer"
+        has_paged_cache = any(seq.block_table for seq in seqs)
+        if has_paged_cache and not all(seq.block_table for seq in seqs):
+            raise ValueError(
+                "execution batches cannot mix paged and cacheless sequences"
+            )
+        use_page_metadata = use_flashinfer and has_paged_cache
+        # FlashInfer falls back to ragged FlashAttention only during cacheless
+        # model-memory warmup. Paged serving does not consume legacy KV lengths,
+        # context lengths, or a dense block table.
+        use_legacy_metadata = not use_flashinfer or not has_paged_cache
+
         input_ids = []
         positions = []
         cu_seqlens_q = [0]
-        cu_seqlens_k = [0]
+        cu_seqlens_k = [0] if use_legacy_metadata else None
         max_seqlen_q = 0
         max_seqlen_k = 0
         slot_mapping = []
         block_tables = None
-        context_lens = []
-        page_kv_indptr = [0]
-        page_indices = []
-        page_last_page_len = []
+        context_lens = [] if use_legacy_metadata else None
+        page_kv_indptr = [0] if use_page_metadata else None
+        page_indices = [] if use_page_metadata else None
+        page_last_page_len = [] if use_page_metadata else None
         seq_need_compute_logits = []
         for seq_index, seq in enumerate(seqs):
             if len(seq) == seq.num_cached_tokens + seq.num_new_tokens and seq.block_table:
                 seq_need_compute_logits.append(seq_index)
-            context_lens.append(seq.num_context_tokens)
+            if context_lens is not None:
+                context_lens.append(seq.num_context_tokens)
             input_ids.extend(seq[seq.num_cached_tokens: seq.num_context_tokens])
             positions.extend(list(range(seq.num_cached_tokens, seq.num_context_tokens)))
             seqlen_q = seq.num_new_tokens
             seqlen_k = seq.num_context_tokens
             cu_seqlens_q.append(cu_seqlens_q[-1] + seqlen_q)
-            cu_seqlens_k.append(cu_seqlens_k[-1] + seqlen_k)
+            if cu_seqlens_k is not None:
+                cu_seqlens_k.append(cu_seqlens_k[-1] + seqlen_k)
             max_seqlen_q = max(seqlen_q, max_seqlen_q)
             max_seqlen_k = max(seqlen_k, max_seqlen_k)
-            page_indices.extend(seq.block_table)
-            page_kv_indptr.append(page_kv_indptr[-1] + len(seq.block_table))
-            if seq.block_table:
+            if page_indices is not None:
+                assert page_kv_indptr is not None
+                assert page_last_page_len is not None
+                page_indices.extend(seq.block_table)
+                page_kv_indptr.append(
+                    page_kv_indptr[-1] + len(seq.block_table)
+                )
                 last_page_len = seq.num_context_tokens % self.block_size
                 page_last_page_len.append(last_page_len or self.block_size)
-            else:
-                page_last_page_len.append(0)
             if not seq.block_table:    # warmup
                 continue
             for i in range(seq.num_cached_blocks, len(seq.block_table)):
@@ -462,23 +478,45 @@ class ModelRunner:
                 else:
                     end = (seq.block_table[i] + 1) * self.block_size
                 slot_mapping.extend(list(range(start, end)))
-        if cu_seqlens_k[-1] > cu_seqlens_q[-1]:    # prefix cache or decoding
+        if (
+            cu_seqlens_k is not None
+            and cu_seqlens_k[-1] > cu_seqlens_q[-1]
+        ):    # prefix cache or decoding
             block_tables = self.prepare_block_tables(seqs)
+        num_pages = len(page_indices) if page_indices is not None else None
+        num_prefill_pages = (
+            page_kv_indptr[num_prefill_seqs]
+            if page_kv_indptr is not None
+            else None
+        )
         input_ids = torch.tensor(input_ids, dtype=torch.int64, pin_memory=True).cuda(non_blocking=True)
         positions = torch.tensor(positions, dtype=torch.int64, pin_memory=True).cuda(non_blocking=True)
         cu_seqlens_q = torch.tensor(cu_seqlens_q, dtype=torch.int32, pin_memory=True).cuda(non_blocking=True)
-        cu_seqlens_k = torch.tensor(cu_seqlens_k, dtype=torch.int32, pin_memory=True).cuda(non_blocking=True)
+        if cu_seqlens_k is not None:
+            cu_seqlens_k = torch.tensor(
+                cu_seqlens_k, dtype=torch.int32, pin_memory=True
+            ).cuda(non_blocking=True)
         slot_mapping = torch.tensor(slot_mapping, dtype=torch.int32, pin_memory=True).cuda(non_blocking=True)
-        context_lens = torch.tensor(context_lens, dtype=torch.int32, pin_memory=True).cuda(non_blocking=True)
-        if any(seq.block_table for seq in seqs):
+        if context_lens is not None:
+            context_lens = torch.tensor(
+                context_lens, dtype=torch.int32, pin_memory=True
+            ).cuda(non_blocking=True)
+        if has_paged_cache:
             seq_need_compute_logits = torch.tensor(
                 seq_need_compute_logits, dtype=torch.int32, pin_memory=True
             ).cuda(non_blocking=True)
         else:
             seq_need_compute_logits = None
-        page_kv_indptr = torch.tensor(page_kv_indptr, dtype=torch.int32, pin_memory=True).cuda(non_blocking=True)
-        page_indices = torch.tensor(page_indices, dtype=torch.int32, pin_memory=True).cuda(non_blocking=True)
-        page_last_page_len = torch.tensor(page_last_page_len, dtype=torch.int32, pin_memory=True).cuda(non_blocking=True)
+        if page_kv_indptr is not None:
+            page_kv_indptr = torch.tensor(
+                page_kv_indptr, dtype=torch.int32, pin_memory=True
+            ).cuda(non_blocking=True)
+            page_indices = torch.tensor(
+                page_indices, dtype=torch.int32, pin_memory=True
+            ).cuda(non_blocking=True)
+            page_last_page_len = torch.tensor(
+                page_last_page_len, dtype=torch.int32, pin_memory=True
+            ).cuda(non_blocking=True)
         set_context(
             cu_seqlens_q=cu_seqlens_q,
             cu_seqlens_k=cu_seqlens_k,
@@ -488,10 +526,13 @@ class ModelRunner:
             context_lens=context_lens,
             block_tables=block_tables,
             seq_need_compute_logits=seq_need_compute_logits,
-            page_q_indptr=cu_seqlens_q,
+            page_q_indptr=cu_seqlens_q if use_page_metadata else None,
             page_kv_indptr=page_kv_indptr,
             page_indices=page_indices,
             page_last_page_len=page_last_page_len,
+            page_metadata_trusted=use_page_metadata,
+            num_pages=num_pages,
+            num_prefill_pages=num_prefill_pages,
             num_prefill_seqs=num_prefill_seqs,
             num_prefill_tokens=num_prefill_tokens,
             num_decode_tokens=num_decode_tokens,
@@ -551,6 +592,8 @@ class ModelRunner:
             return eager_fallback()
         if context.num_prefill_seqs != 0:
             return eager_fallback()
+        if context.num_prefill_tokens != 0:
+            return eager_fallback()
 
         q_indptr = context.page_q_indptr
         last_page_len = context.page_last_page_len
@@ -565,7 +608,12 @@ class ModelRunner:
             return eager_fallback()
         if q_indptr.numel() != num_requests + 1:
             return eager_fallback()
-        if not bool(torch.all(q_indptr[1:] - q_indptr[:-1] == 1).item()):
+        if (
+            getattr(context, "page_metadata_trusted", False) is not True
+            and not bool(
+                torch.all(q_indptr[1:] - q_indptr[:-1] == 1).item()
+            )
+        ):
             return eager_fallback()
 
         graph_state = self.decode_graph_states.get(num_requests)
@@ -609,26 +657,35 @@ class ModelRunner:
             return False
         if indices.numel() > state.page_indices_capacity:
             return False
-        if int(q_indptr[0].item()) != 0:
-            return False
-        if int(q_indptr[-1].item()) != batch_size:
-            return False
-        if int(kv_indptr[0].item()) != 0:
-            return False
-        if int(kv_indptr[-1].item()) != indices.numel():
-            return False
-        if not bool(torch.all(kv_indptr[1:] >= kv_indptr[:-1]).item()):
-            return False
-        valid_last_page = (last_page_len > 0) & (
-            last_page_len <= self.block_size
-        )
-        if not bool(torch.all(valid_last_page).item()):
-            return False
-        if indices.numel() and (
-            int(indices.min().item()) < 0
-            or int(indices.max().item()) >= self.config.num_kvcache_blocks
-        ):
-            return False
+        if getattr(context, "page_metadata_trusted", False) is True:
+            num_pages = getattr(context, "num_pages", None)
+            num_prefill_pages = getattr(context, "num_prefill_pages", None)
+            if type(num_pages) is not int or num_pages != indices.numel():
+                return False
+            if type(num_prefill_pages) is not int or num_prefill_pages != 0:
+                return False
+        else:
+            if int(q_indptr[0].item()) != 0:
+                return False
+            if int(q_indptr[-1].item()) != batch_size:
+                return False
+            if int(kv_indptr[0].item()) != 0:
+                return False
+            if int(kv_indptr[-1].item()) != indices.numel():
+                return False
+            if not bool(torch.all(kv_indptr[1:] >= kv_indptr[:-1]).item()):
+                return False
+            valid_last_page = (last_page_len > 0) & (
+                last_page_len <= self.block_size
+            )
+            if not bool(torch.all(valid_last_page).item()):
+                return False
+            if indices.numel() and (
+                int(indices.min().item()) < 0
+                or int(indices.max().item())
+                >= self.config.num_kvcache_blocks
+            ):
+                return False
         slot_mapping = context.slot_mapping
         if not isinstance(slot_mapping, torch.Tensor):
             return False
@@ -722,15 +779,16 @@ class ModelRunner:
             )
             set_context(
                 cu_seqlens_q=capture_q_indptr,
-                cu_seqlens_k=capture_q_indptr,
                 max_seqlen_q=1,
                 max_seqlen_k=1,
                 slot_mapping=state.static_slot_mapping,
-                context_lens=capture_last_page_len,
                 page_q_indptr=capture_q_indptr,
                 page_kv_indptr=capture_kv_indptr,
                 page_indices=capture_indices,
                 page_last_page_len=capture_last_page_len,
+                page_metadata_trusted=True,
+                num_pages=batch_size,
+                num_prefill_pages=0,
                 num_prefill_seqs=0,
                 num_prefill_tokens=0,
                 num_decode_tokens=batch_size,
@@ -746,15 +804,16 @@ class ModelRunner:
             # graph-aware FlashInfer wrapper's plan above.
             set_context(
                 cu_seqlens_q=state.static_page_q_indptr,
-                cu_seqlens_k=state.static_page_q_indptr,
                 max_seqlen_q=1,
                 max_seqlen_k=1,
                 slot_mapping=state.static_slot_mapping,
-                context_lens=state.static_page_last_page_len,
                 page_q_indptr=state.static_page_q_indptr,
                 page_kv_indptr=state.static_page_kv_indptr,
                 page_indices=state.static_page_indices[:batch_size],
                 page_last_page_len=state.static_page_last_page_len,
+                page_metadata_trusted=True,
+                num_pages=batch_size,
+                num_prefill_pages=0,
                 num_prefill_seqs=0,
                 num_prefill_tokens=0,
                 num_decode_tokens=batch_size,
