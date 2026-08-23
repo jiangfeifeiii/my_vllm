@@ -104,7 +104,7 @@ def test_formal_protocol_allows_explicit_route_assertion_only():
 
 @pytest.mark.parametrize(
     ("available", "route"),
-    [(True, "mixed_holistic"), (False, "mixed_split")],
+    [(True, "mixed_unified"), (False, "mixed_split")],
 )
 def test_dispatch_route_assertion_follows_capability(available, route):
     assert (

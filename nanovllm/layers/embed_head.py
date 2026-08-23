@@ -55,7 +55,12 @@ class ParallelLMHead(VocabParallelEmbedding):
 
     def forward(self, x: torch.Tensor):
         context = get_context()
-        last_indices = context.cu_seqlens_q[1:] - 1
+        metadata = context.attention_metadata
+        if metadata is None:
+            raise RuntimeError(
+                "attention metadata must be prepared before LM head forward"
+            )
+        last_indices = metadata.query_start_loc[1:] - 1
         if context.seq_need_compute_logits is not None:
             last_indices = last_indices[context.seq_need_compute_logits]
         x = x[last_indices].contiguous()

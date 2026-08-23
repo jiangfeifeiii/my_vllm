@@ -1,5 +1,6 @@
 from dataclasses import dataclass
 from enum import Enum
+from typing import Any
 import torch
 
 
@@ -14,30 +15,61 @@ class RuntimeExecutionMode(str, Enum):
     FULL_GRAPH = "full_graph"
 
 
+@dataclass(frozen=True)
+class CommonAttentionMetadata:
+    """Backend-neutral metadata produced once for one scheduled batch."""
+
+    num_prefill_seqs: int
+    num_decode_seqs: int
+    num_prefill_tokens: int
+    num_decode_tokens: int
+    query_start_loc: torch.Tensor
+    seq_lens: torch.Tensor
+    slot_mapping: torch.Tensor
+    block_tables: torch.Tensor | None = None
+    max_q_len: int = 0
+    max_kv_len: int = 0
+    block_counts: tuple[int, ...] = ()
+    num_kv_blocks: int = 0
+    num_prefill_kv_blocks: int = 0
+    trusted: bool = False
+
+    @property
+    def num_seqs(self) -> int:
+        return self.num_prefill_seqs + self.num_decode_seqs
+
+    @property
+    def num_query_tokens(self) -> int:
+        return self.num_prefill_tokens + self.num_decode_tokens
+
+
 @dataclass
 class Context:
-    cu_seqlens_q: torch.Tensor | None = None
-    cu_seqlens_k: torch.Tensor | None = None
-    max_seqlen_q: int = 0
-    max_seqlen_k: int = 0
-    slot_mapping: torch.Tensor | None = None
-    context_lens: torch.Tensor | None = None
-    block_tables: torch.Tensor | None = None
+    attention_metadata: CommonAttentionMetadata | None = None
+    attention_plan: Any = None
     seq_need_compute_logits: torch.Tensor | None = None
-    page_q_indptr: torch.Tensor | None = None
-    page_kv_indptr: torch.Tensor | None = None
-    page_indices: torch.Tensor | None = None
-    page_last_page_len: torch.Tensor | None = None
-    # Only ModelRunner-produced paged metadata may set this flag. External and
-    # hand-built Context objects default to strict device-value validation.
-    page_metadata_trusted: bool = False
-    num_pages: int | None = None
-    num_prefill_pages: int | None = None
-    num_prefill_seqs: int | None = None
-    num_prefill_tokens: int | None = None
-    num_decode_tokens: int | None = None
-    batch_type: BatchType | None = None
     runtime_mode: RuntimeExecutionMode = RuntimeExecutionMode.EAGER
+
+    @property
+    def slot_mapping(self) -> torch.Tensor | None:
+        metadata = self.attention_metadata
+        return None if metadata is None else metadata.slot_mapping
+
+    @property
+    def cu_seqlens_q(self) -> torch.Tensor | None:
+        """Compatibility alias for the backend-neutral query offsets."""
+        metadata = self.attention_metadata
+        return None if metadata is None else metadata.query_start_loc
+
+    @property
+    def max_seqlen_q(self) -> int:
+        metadata = self.attention_metadata
+        return 0 if metadata is None else metadata.max_q_len
+
+    @property
+    def batch_type(self) -> BatchType | None:
+        plan = self.attention_plan
+        return None if plan is None else plan.batch_type
 
 
 _CONTEXT = Context()
@@ -48,48 +80,16 @@ def get_context():
 
 
 def set_context(
-    cu_seqlens_q=None,
-    cu_seqlens_k=None,
-    max_seqlen_q=0,
-    max_seqlen_k=0,
-    slot_mapping=None,
-    context_lens=None,
-    block_tables=None,
+    attention_metadata: CommonAttentionMetadata | None = None,
+    attention_plan: Any = None,
     seq_need_compute_logits=None,
-    page_q_indptr=None,
-    page_kv_indptr=None,
-    page_indices=None,
-    page_last_page_len=None,
-    page_metadata_trusted=False,
-    num_pages=None,
-    num_prefill_pages=None,
-    num_prefill_seqs=None,
-    num_prefill_tokens=None,
-    num_decode_tokens=None,
-    batch_type=None,
     runtime_mode=RuntimeExecutionMode.EAGER,
 ):
     global _CONTEXT
     _CONTEXT = Context(
-        cu_seqlens_q=cu_seqlens_q,
-        cu_seqlens_k=cu_seqlens_k,
-        max_seqlen_q=max_seqlen_q,
-        max_seqlen_k=max_seqlen_k,
-        slot_mapping=slot_mapping,
-        context_lens=context_lens,
-        block_tables=block_tables,
+        attention_metadata=attention_metadata,
+        attention_plan=attention_plan,
         seq_need_compute_logits=seq_need_compute_logits,
-        page_q_indptr=page_q_indptr,
-        page_kv_indptr=page_kv_indptr,
-        page_indices=page_indices,
-        page_last_page_len=page_last_page_len,
-        page_metadata_trusted=page_metadata_trusted,
-        num_pages=num_pages,
-        num_prefill_pages=num_prefill_pages,
-        num_prefill_seqs=num_prefill_seqs,
-        num_prefill_tokens=num_prefill_tokens,
-        num_decode_tokens=num_decode_tokens,
-        batch_type=batch_type,
         runtime_mode=runtime_mode,
     )
 

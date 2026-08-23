@@ -145,6 +145,7 @@ def _same_step_logits(attention_mode: str, enabled: bool):
 
 
 def _same_step_alias_and_private_logits(attention_mode: str):
+    from nanovllm.layers.attention_backend import FlashInferMetadata
     from nanovllm.utils.context import get_context, reset_context
 
     shared = list(range(7000, 7032))
@@ -190,19 +191,25 @@ def _same_step_alias_and_private_logits(attention_mode: str):
                     llm.scheduler.num_scheduled_prefill_seqs,
                 )
                 context = get_context()
+                common = context.attention_metadata
+                assert common is not None
+                logits = llm.model_runner.run_model(input_ids, positions)
+                plan = context.attention_plan
+                assert plan is not None
+                backend_metadata = plan.backend_metadata
+                assert isinstance(backend_metadata, FlashInferMetadata)
                 metadata = {
                     "input_ids": input_ids.cpu().tolist(),
                     "positions": positions.cpu().tolist(),
-                    "q_indptr": context.page_q_indptr.cpu().tolist(),
-                    "kv_indptr": context.page_kv_indptr.cpu().tolist(),
-                    "page_indices": context.page_indices.cpu().tolist(),
-                    "last_page_len": context.page_last_page_len.cpu().tolist(),
-                    "slot_mapping": context.slot_mapping.cpu().tolist(),
+                    "q_indptr": common.query_start_loc.cpu().tolist(),
+                    "kv_indptr": backend_metadata.kv_indptr.cpu().tolist(),
+                    "page_indices": backend_metadata.page_indices.cpu().tolist(),
+                    "last_page_len": backend_metadata.last_page_len.cpu().tolist(),
+                    "slot_mapping": common.slot_mapping.cpu().tolist(),
                     "logits_indices": (
                         context.seq_need_compute_logits.cpu().tolist()
                     ),
                 }
-                logits = llm.model_runner.run_model(input_ids, positions)
                 torch.cuda.synchronize()
                 return logits.float().cpu(), metadata
             finally:

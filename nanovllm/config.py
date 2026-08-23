@@ -32,7 +32,7 @@ class Config:
     chunked_prefill: bool = False
     enable_lpm: bool = True
     enable_same_step_prefix_reuse: bool = True
-    attention_backend: str = "flashinfer"
+    attention_backend: str = "auto"
     attention_mode: str = "unified"
     operator_overrides: dict[str, str] = field(default_factory=dict)
 
@@ -62,14 +62,34 @@ class Config:
         if len(set(self.cudagraph_batch_sizes)) != len(self.cudagraph_batch_sizes):
             raise ValueError("cudagraph_batch_sizes must not contain duplicates")
         self.cudagraph_batch_sizes = tuple(sorted(self.cudagraph_batch_sizes))
-        assert self.kvcache_block_size > 0
-        assert self.attention_backend in ("flashinfer", "legacy")
-        assert self.attention_mode in ("unified", "split")
-        if self.attention_backend == "legacy":
-            assert self.kvcache_block_size % 256 == 0
-            assert self.attention_mode == "unified", (
-                "legacy attention supports only attention_mode='unified'"
+        if (
+            type(self.kvcache_block_size) is not int
+            or self.kvcache_block_size <= 0
+        ):
+            raise ValueError("kvcache_block_size must be a positive int")
+        self.attention_backend = self.attention_backend.lower()
+        if self.attention_backend not in (
+            "auto",
+            "flashattention",
+            "flashinfer",
+            "legacy",
+        ):
+            raise ValueError(
+                "attention_backend must be 'auto', 'flashattention', "
+                "'flashinfer', or the compatibility alias 'legacy'"
             )
+        self.attention_mode = self.attention_mode.lower()
+        if self.attention_mode not in ("unified", "split"):
+            raise ValueError("attention_mode must be 'unified' or 'split'")
+        if self.attention_backend in ("flashattention", "legacy"):
+            if self.kvcache_block_size % 256:
+                raise ValueError(
+                    "FlashAttention requires kvcache_block_size divisible by 256"
+                )
+            if self.attention_mode != "unified":
+                raise ValueError(
+                    "FlashAttention supports only attention_mode='unified'"
+                )
         assert 1 <= self.tensor_parallel_size <= 8
         self.hf_config = AutoConfig.from_pretrained(self.model)
         self.max_model_len = min(self.max_model_len, self.hf_config.max_position_embeddings)

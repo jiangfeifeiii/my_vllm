@@ -62,7 +62,11 @@ silently starting a local JIT build.
 
 ## Quick start
 
-The default attention path uses FlashInfer with 16-token KV-cache pages. Set
+Attention selection defaults to `attention_backend="auto"`. The static
+`AttentionBackendRegistry` tries Dao FlashAttention only when the KV-cache page
+size is divisible by 256 and that backend is usable; otherwise it selects
+FlashInfer, and reports an explicit error if neither complete backend can run.
+The engine's default 16-token pages therefore select FlashInfer. Set
 `chunked_prefill=True` when prompts may exceed the per-batch token budget.
 
 ```python
@@ -72,7 +76,7 @@ llm = LLM(
     "/absolute/path/to/Qwen3-model",
     cudagraph_mode=CUDAGraphPolicy.NONE,
     tensor_parallel_size=1,
-    attention_backend="flashinfer",
+    attention_backend="auto",
     attention_mode="unified",
     kvcache_block_size=16,
     chunked_prefill=True,
@@ -84,12 +88,19 @@ outputs = llm.generate(["Hello, Nano-vLLM."], params)
 print(outputs[0]["text"])
 ```
 
-`attention_mode="unified"` is the default. `PURE_PREFILL` uses FlashInfer's
-paged-prefill wrapper, `PURE_DECODE` uses its paged-decode wrapper, and `MIXED`
-uses holistic `BatchAttention` where FlashInfer/device capability allows it.
-Unsupported mixed configurations (including FlashInfer 0.6.17 on SM120) fall
-back to phase-specialized prefill/decode calls writing directly into one
-reusable output buffer. Select `"split"` to force that zero-copy mixed path.
+`ModelRunner` produces one backend-neutral `CommonAttentionMetadata`; the
+selected backend owns conversion to its kernel metadata and returns an explicit
+`AttentionPlan`. That plan classifies the batch exactly once as `PURE_PREFILL`,
+`PURE_DECODE`, or `MIXED`. In FlashInfer, the first two use the specialized
+paged-prefill and paged-decode wrappers. A mixed batch uses `mixed_unified`
+(`BatchAttention`) when available, or `mixed_split`, whose prefill and decode
+kernels write slices of the same preallocated output buffer without
+`torch.cat`. Select `attention_mode="split"` to force the latter route.
+
+FlashInfer's unified mixed route currently has a temporary gate for device
+names containing `RTX 5070`, which fall back to `mixed_split`. This is
+deliberately not a general SM120 rule; a TODO in the backend tracks replacement
+with a portable runtime capability probe.
 
 ### Prefix-cache admission
 
@@ -146,20 +157,23 @@ separate:
 | Policy and batch conditions | Runtime mode |
 |---|---|
 | `NONE`, any batch | `EAGER` |
-| `FULL_DECODE_ONLY`, pure decode, unified FlashInfer, tensor parallel size 1, one query token per request, exact captured batch-size bucket, valid page metadata | `FULL_GRAPH` |
+| `FULL_DECODE_ONLY`, pure decode, unified FlashInfer, tensor parallel size 1, one query token per request, exact captured batch-size bucket, common metadata fitting the backend-owned graph state | `FULL_GRAPH` |
 | `FULL_DECODE_ONLY`, any unmet condition above | `EAGER` fallback |
 
 The default configured buckets are `1, 2, 4, 8, 16, 32, 64`, limited by
 `max_num_seqs` and `max_num_batched_tokens` during initialization. Replay
 requires an exact batch-size match: a batch of 12 is never padded to a bucket
-of 16. Pure prefill, mixed batches, split attention, legacy attention, tensor
+of 16. Pure prefill, mixed batches, split attention, Dao FlashAttention, tensor
 parallel execution, missing buckets, and metadata-capacity failures remain
 Eager.
 
-For an eligible replay, FlashInfer planning and metadata/input updates happen
-outside the graph. Replay captures the embedding, transformer layers (including
-specialized decode attention and MLP), and final RMSNorm. Logit computation,
-sampling, scheduler/postprocessing, and prefix-cache management remain outside.
+For an eligible replay, FlashInfer owns its fixed-address decode wrapper and
+page metadata buffers behind an opaque attention graph state. Backend planning
+and metadata/input updates happen outside the graph. Replay captures the
+embedding, transformer layers (including specialized decode attention and MLP),
+and final RMSNorm. Logit computation, sampling, scheduler/postprocessing, and
+prefix-cache management remain outside.
+
 Runtime coverage can be inspected without a profiler:
 
 ```python
@@ -181,9 +195,9 @@ These statistics validate runtime routing; they are not scheduler performance
 results. Cross-framework scheduler comparisons must disable CUDA Graph in both
 engines.
 
-For a runnable example that explicitly enables FlashInfer attention, 16-token
-KV pages, chunked prefill, cache-aware LPM, adaptive SiLU dispatch, and the
-FlashInfer normalization/RoPE implementations, run:
+For a runnable example that exercises automatic attention-backend selection,
+16-token KV pages, chunked prefill, cache-aware LPM, adaptive SiLU dispatch, and
+the FlashInfer normalization/RoPE implementations, run:
 
 ```bash
 # Eager (also the example's default)
@@ -199,10 +213,11 @@ python example_optimized.py \
   --cudagraph-mode full_decode_only
 ```
 
-The example prints holistic-mixed availability/fallback, eager attention-route
-counts, captured buckets, capture time, additional graph memory, and replay/
-fallback hit counts. Its default workload includes a resumed long prefill next
-to active decode requests, so the `MIXED` route is exercised. Add `--debug` to
+The example prints the requested and selected backend, unified-mixed
+availability/fallback, eager attention-route counts, captured buckets, capture
+time, additional graph memory, and replay/fallback hit counts. Its default
+workload includes a resumed long prefill next to active decode requests, so the
+`MIXED` route is exercised. Add `--debug` to
 pause in `pdb` immediately before the first generation call.
 
 Ordinary operators inherit `CustomOp`. During model construction, each module
@@ -235,12 +250,14 @@ serving heuristic. Existing fields such as `provider_name`,
 `rms_provider_name`, `add_rms_provider_name`, and `kv_store_provider_name`
 remain available as diagnostic names for the bound implementations.
 
-### Legacy rollback
+### FlashAttention compatibility alias
 
-The attention backend is independent of ordinary-operator `CustomOp`
-dispatch. To restore the original FlashAttention paged path and native
-ordinary-operator implementations, select it explicitly and use a block size
-divisible by 256:
+Attention selection is independent of ordinary-operator `CustomOp` dispatch.
+`attention_backend="legacy"` remains accepted for existing configurations, but
+it resolves to the same `FlashAttentionBackend` as
+`attention_backend="flashattention"`; there is no separate legacy backend.
+Dao paged attention requires a block size divisible by 256. Native ordinary
+operators must still be selected independently if desired:
 
 ```python
 llm = LLM(
@@ -257,9 +274,9 @@ llm = LLM(
 )
 ```
 
-The legacy path still requires `flash-attn`; it is a rollback path for
-attention and ordinary-operator implementation selection, not a CPU inference
-mode.
+The alias still requires `flash-attn` and supports only
+`attention_mode="unified"`. It changes only attention selection and is not a CPU
+inference mode.
 
 ## Tests
 
@@ -354,7 +371,7 @@ requested workload.
 Run the current production Qwen3-0.6B mixed-dispatch protocol with:
 
 ```bash
-# On the documented SM120 stack, make the safety fallback an explicit assert.
+# On the documented RTX 5070, assert the temporary device-name fallback.
 PYTHONHASHSEED=0 FLASHINFER_CUDA_ARCH_LIST=12.0f FLASHINFER_DISABLE_JIT=1 \
 /tmp/nanovllm-flashinfer-env/bin/python bench_attention_dispatch.py \
   --output /tmp/nanovllm-attention-dispatch.json \

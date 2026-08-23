@@ -3,7 +3,9 @@
 The default case is the Qwen3-0.6B BF16 attention shape used by this
 repository: one 128-token prefill at KV length 4224 plus three one-token
 decodes at KV length 4096.  Production measurements go through
-``FlashInferAttentionBackend.plan`` and ``forward``.  The reference is the
+``AttentionBackendRegistry`` selection plus ``build_metadata``,
+``build_plan``, and ``forward`` using the same backend-neutral contract as
+``ModelRunner``.  The reference is the
 retired all-batch ``BatchPrefillWithPagedKVCacheWrapper`` route.
 
 Planning, correctness checks, and output allocation are outside the timed
@@ -103,7 +105,7 @@ def _parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     )
     parser.add_argument(
         "--expected-route",
-        choices=("auto", "mixed_holistic", "mixed_split"),
+        choices=("auto", "mixed_unified", "mixed_split"),
         default="auto",
         help=(
             "assert an exact production route; auto derives it from the "
@@ -213,7 +215,7 @@ def _validate_dispatch_route(
     if batch_type != "mixed":
         raise AssertionError(f"expected BatchType.MIXED, got {batch_type!r}")
     capability_route = (
-        "mixed_holistic" if mixed_attention_available else "mixed_split"
+        "mixed_unified" if mixed_attention_available else "mixed_split"
     )
     required_route = (
         capability_route if expected_route == "auto" else expected_route
@@ -417,8 +419,11 @@ def _run(args: argparse.Namespace, case: CaseSpec) -> dict[str, object]:
     # CUDA device. Keeping these imports local also makes helper tests CPU-only.
     from flashinfer.prefill import BatchPrefillWithPagedKVCacheWrapper
 
-    from nanovllm.layers.attention_backend import FlashInferAttentionBackend
-    from nanovllm.utils.context import BatchType, Context
+    from nanovllm.layers.attention_backend import (
+        AttentionBackendRegistry,
+        FlashInferBackend,
+    )
+    from nanovllm.utils.context import BatchType, CommonAttentionMetadata
 
     torch.manual_seed(args.seed)
     torch.cuda.manual_seed_all(args.seed)
@@ -438,21 +443,38 @@ def _run(args: argparse.Namespace, case: CaseSpec) -> dict[str, object]:
         dtype=torch.int32,
         device=device,
     )
-    context = Context(
-        page_q_indptr=q_indptr,
-        page_kv_indptr=kv_indptr,
-        page_indices=page_indices,
-        page_last_page_len=last_page_len,
-        page_metadata_trusted=True,
-        num_pages=num_pages,
-        num_prefill_pages=num_prefill_pages,
+    max_page_count = max(page_counts)
+    block_table_rows = []
+    page_offset = 0
+    for page_count in page_counts:
+        block_table_rows.append(
+            list(range(page_offset, page_offset + page_count))
+            + [-1] * (max_page_count - page_count)
+        )
+        page_offset += page_count
+    block_tables = torch.tensor(
+        block_table_rows,
+        dtype=torch.int32,
+        device=device,
+    )
+    common = CommonAttentionMetadata(
         num_prefill_seqs=1,
+        num_decode_seqs=case.decode_batch,
         num_prefill_tokens=case.prefill_q_len,
         num_decode_tokens=case.decode_batch,
-        batch_type=BatchType.MIXED,
+        query_start_loc=q_indptr,
+        seq_lens=torch.tensor(kv_lens, dtype=torch.int32, device=device),
+        slot_mapping=torch.full(
+            (sum(q_lens),), -1, dtype=torch.int32, device=device
+        ),
+        block_tables=block_tables,
+        max_q_len=max(q_lens),
+        max_kv_len=max(kv_lens),
+        block_counts=page_counts,
+        num_kv_blocks=num_pages,
+        num_prefill_kv_blocks=num_prefill_pages,
+        trusted=True,
     )
-    if context.batch_type is not BatchType.MIXED:
-        raise AssertionError("benchmark context must use BatchType.MIXED")
 
     q = torch.empty(
         (sum(q_lens), NUM_Q_HEADS, HEAD_DIM),
@@ -469,18 +491,25 @@ def _run(args: argparse.Namespace, case: CaseSpec) -> dict[str, object]:
     cache = (k_cache, v_cache)
     unused_kv = q.new_empty((0, NUM_KV_HEADS, HEAD_DIM))
 
-    production = FlashInferAttentionBackend(
-        NUM_Q_HEADS,
-        NUM_KV_HEADS,
-        HEAD_DIM,
-        BLOCK_SIZE,
-        DTYPE,
+    production = AttentionBackendRegistry.create(
+        "auto",
+        num_q_heads=NUM_Q_HEADS,
+        num_kv_heads=NUM_KV_HEADS,
+        head_dim=HEAD_DIM,
+        block_size=BLOCK_SIZE,
+        dtype=DTYPE,
         attention_mode="unified",
+        device=device,
     )
-    production.plan(context)
+    if not isinstance(production, FlashInferBackend):
+        raise AssertionError("B16 auto selection must resolve to FlashInfer")
+    backend_metadata = production.build_metadata(common)
+    plan = production.build_plan(common, backend_metadata)
+    if plan.batch_type is not BatchType.MIXED:
+        raise AssertionError("benchmark plan must use BatchType.MIXED")
     asserted_route = _validate_dispatch_route(
-        batch_type=context.batch_type.value,
-        planned_route=production.planned_route,
+        batch_type=plan.batch_type.value,
+        planned_route=plan.route.value,
         mixed_attention_available=production.mixed_attention_available,
         expected_route=args.expected_route,
     )
@@ -496,12 +525,12 @@ def _run(args: argparse.Namespace, case: CaseSpec) -> dict[str, object]:
     if production.mixed_attention_available:
         if unavailable_reason is not None:
             raise AssertionError(
-                "available holistic mixed attention must not report a "
+                "available unified mixed attention must not report a "
                 "fallback reason"
             )
     elif not unavailable_reason:
         raise AssertionError(
-            "mixed split fallback must report why holistic attention is "
+            "mixed split fallback must report why unified attention is "
             "unavailable"
         )
 
@@ -538,7 +567,7 @@ def _run(args: argparse.Namespace, case: CaseSpec) -> dict[str, object]:
             unused_kv,
             k_cache,
             v_cache,
-            context,
+            plan,
         )
 
     def run_retired() -> torch.Tensor:
@@ -569,7 +598,7 @@ def _run(args: argparse.Namespace, case: CaseSpec) -> dict[str, object]:
     element_size = torch.empty((), dtype=DTYPE).element_size()
 
     return {
-        "schema_version": 1,
+        "schema_version": 2,
         "benchmark": "nanovllm_production_mixed_attention_dispatch",
         "status": "complete",
         "started_at_utc": started_at_utc,
@@ -606,11 +635,14 @@ def _run(args: argparse.Namespace, case: CaseSpec) -> dict[str, object]:
             ),
         },
         "dispatch": {
-            "batch_type": context.batch_type.value,
+            "backend_requested": "auto",
+            "backend": production.backend_name,
+            "batch_type": plan.batch_type.value,
             "attention_mode": production.attention_mode,
             "expected_route_argument": args.expected_route,
             "asserted_route": asserted_route,
-            "actual_route": production.planned_route,
+            "actual_route": plan.route.value,
+            "backend_metadata_type": type(backend_metadata).__name__,
             "mixed_attention_available": production.mixed_attention_available,
             "mixed_attention_unavailable_reason": (
                 production.mixed_attention_unavailable_reason

@@ -13,8 +13,7 @@ from nanovllm.config import CUDAGraphPolicy, Config
 from nanovllm.engine.sequence import Sequence
 from nanovllm.models.qwen3 import Qwen3ForCausalLM
 from nanovllm.layers.attention_backend import (
-    FlashInferAttentionBackend,
-    LegacyFlashAttentionBackend,
+    AttentionBackendRegistry,
 )
 from nanovllm.layers.sampler import Sampler
 from nanovllm.layers.custom_op import (
@@ -23,6 +22,7 @@ from nanovllm.layers.custom_op import (
 )
 from nanovllm.utils.context import (
     BatchType,
+    CommonAttentionMetadata,
     RuntimeExecutionMode,
     get_context,
     reset_context,
@@ -48,17 +48,11 @@ def _claim_full_decode_graph_capture_session() -> bool:
 @dataclass
 class DecodeGraphState:
     batch_size: int
-    page_indices_capacity: int
-    wrapper: Any
+    attention_state: Any
     cuda_graph: torch.cuda.CUDAGraph | None
     static_input_ids: torch.Tensor
     static_positions: torch.Tensor
     static_slot_mapping: torch.Tensor
-    static_page_q_indptr: torch.Tensor
-    static_page_kv_indptr: torch.Tensor
-    static_page_indices: torch.Tensor
-    static_page_last_page_len: torch.Tensor
-    static_attention_output: torch.Tensor
     static_hidden_output: torch.Tensor
 
 
@@ -109,19 +103,14 @@ class ModelRunner:
             "block_size": self.block_size,
             "dtype": self.dtype,
         }
-        if config.attention_backend == "flashinfer":
-            self.attention_backend = FlashInferAttentionBackend(
-                **backend_kwargs,
-                attention_mode=config.attention_mode,
-            )
-        else:
-            self.attention_backend = LegacyFlashAttentionBackend(
-                **backend_kwargs,
-            )
+        self.attention_backend = AttentionBackendRegistry.create(
+            config.attention_backend, **backend_kwargs,
+            attention_mode=config.attention_mode,
+            device=torch.device("cuda", rank),
+        )
         self.full_decode_graph_capable = (
             self.cudagraph_policy is CUDAGraphPolicy.FULL_DECODE_ONLY
             and self.world_size == 1
-            and config.attention_mode == "unified"
             and self.attention_backend.supports_full_decode_graph
             and any(
                 size <= min(config.max_num_seqs, config.max_num_batched_tokens)
@@ -287,33 +276,21 @@ class ModelRunner:
         ) // self.block_size
         device = torch.device("cuda", torch.cuda.current_device())
         hidden_size = config.hf_config.hidden_size
-        num_q_heads = self.attention_backend.num_q_heads
-        head_dim = self.attention_backend.head_dim
 
         for batch_size in config.cudagraph_batch_sizes:
             if batch_size > max_decode_batch:
                 continue
-            page_indices_capacity = batch_size * max_pages_per_request
-            static_page_q_indptr = torch.empty(
-                batch_size + 1, dtype=torch.int32, device=device
-            )
-            static_page_kv_indptr = torch.empty_like(static_page_q_indptr)
-            static_page_indices = torch.empty(
-                page_indices_capacity, dtype=torch.int32, device=device
-            )
-            static_page_last_page_len = torch.empty(
-                batch_size, dtype=torch.int32, device=device
-            )
-            wrapper = self.attention_backend.create_full_decode_graph_wrapper(
-                static_page_q_indptr,
-                static_page_kv_indptr,
-                static_page_indices,
-                static_page_last_page_len,
+            kv_block_capacity = batch_size * max_pages_per_request
+            attention_state = (
+                self.attention_backend.create_full_decode_graph_state(
+                    batch_size,
+                    kv_block_capacity,
+                    device,
+                )
             )
             self.decode_graph_states[batch_size] = DecodeGraphState(
                 batch_size=batch_size,
-                page_indices_capacity=page_indices_capacity,
-                wrapper=wrapper,
+                attention_state=attention_state,
                 cuda_graph=None,
                 static_input_ids=torch.empty(
                     batch_size, dtype=torch.int64, device=device
@@ -323,17 +300,6 @@ class ModelRunner:
                 ),
                 static_slot_mapping=torch.empty(
                     batch_size, dtype=torch.int32, device=device
-                ),
-                static_page_q_indptr=static_page_q_indptr,
-                static_page_kv_indptr=static_page_kv_indptr,
-                static_page_indices=static_page_indices,
-                static_page_last_page_len=static_page_last_page_len,
-                static_attention_output=torch.empty(
-                    batch_size,
-                    num_q_heads,
-                    head_dim,
-                    dtype=self.dtype,
-                    device=device,
                 ),
                 static_hidden_output=torch.empty(
                     batch_size,
@@ -401,13 +367,9 @@ class ModelRunner:
             raise ValueError("cannot prepare an empty execution batch")
         if num_prefill_seqs is None:
             num_prefill_seqs = len(seqs)
-        assert 0 <= num_prefill_seqs <= len(seqs)
-        if num_prefill_seqs == 0:
-            batch_type = BatchType.PURE_DECODE
-        elif num_prefill_seqs == len(seqs):
-            batch_type = BatchType.PURE_PREFILL
-        else:
-            batch_type = BatchType.MIXED
+        if not 0 <= num_prefill_seqs <= len(seqs):
+            raise ValueError("num_prefill_seqs is outside the batch")
+        num_decode_seqs = len(seqs) - num_prefill_seqs
         num_prefill_tokens = sum(
             seq.num_new_tokens for seq in seqs[:num_prefill_seqs]
         )
@@ -419,55 +381,35 @@ class ModelRunner:
             for seq in seqs[num_prefill_seqs:]
         ), "decode suffix must contain one query token per sequence"
 
-        use_flashinfer = self.config.attention_backend == "flashinfer"
         has_paged_cache = any(seq.block_table for seq in seqs)
         if has_paged_cache and not all(seq.block_table for seq in seqs):
             raise ValueError(
                 "execution batches cannot mix paged and cacheless sequences"
             )
-        use_page_metadata = use_flashinfer and has_paged_cache
-        # FlashInfer falls back to ragged FlashAttention only during cacheless
-        # model-memory warmup. Paged serving does not consume legacy KV lengths,
-        # context lengths, or a dense block table.
-        use_legacy_metadata = not use_flashinfer or not has_paged_cache
 
         input_ids = []
         positions = []
-        cu_seqlens_q = [0]
-        cu_seqlens_k = [0] if use_legacy_metadata else None
-        max_seqlen_q = 0
-        max_seqlen_k = 0
+        query_start_loc = [0]
+        seq_lens = []
+        max_q_len = 0
+        max_kv_len = 0
         slot_mapping = []
-        block_tables = None
-        context_lens = [] if use_legacy_metadata else None
-        page_kv_indptr = [0] if use_page_metadata else None
-        page_indices = [] if use_page_metadata else None
-        page_last_page_len = [] if use_page_metadata else None
         seq_need_compute_logits = []
         for seq_index, seq in enumerate(seqs):
             if len(seq) == seq.num_cached_tokens + seq.num_new_tokens and seq.block_table:
                 seq_need_compute_logits.append(seq_index)
-            if context_lens is not None:
-                context_lens.append(seq.num_context_tokens)
             input_ids.extend(seq[seq.num_cached_tokens: seq.num_context_tokens])
             positions.extend(list(range(seq.num_cached_tokens, seq.num_context_tokens)))
             seqlen_q = seq.num_new_tokens
             seqlen_k = seq.num_context_tokens
-            cu_seqlens_q.append(cu_seqlens_q[-1] + seqlen_q)
-            if cu_seqlens_k is not None:
-                cu_seqlens_k.append(cu_seqlens_k[-1] + seqlen_k)
-            max_seqlen_q = max(seqlen_q, max_seqlen_q)
-            max_seqlen_k = max(seqlen_k, max_seqlen_k)
-            if page_indices is not None:
-                assert page_kv_indptr is not None
-                assert page_last_page_len is not None
-                page_indices.extend(seq.block_table)
-                page_kv_indptr.append(
-                    page_kv_indptr[-1] + len(seq.block_table)
-                )
-                last_page_len = seq.num_context_tokens % self.block_size
-                page_last_page_len.append(last_page_len or self.block_size)
-            if not seq.block_table:    # warmup
+            query_start_loc.append(query_start_loc[-1] + seqlen_q)
+            seq_lens.append(seqlen_k)
+            max_q_len = max(seqlen_q, max_q_len)
+            max_kv_len = max(seqlen_k, max_kv_len)
+            if not seq.block_table:
+                # Cacheless model-memory warmup still carries one neutral slot
+                # entry per query token as part of the common contract.
+                slot_mapping.extend([-1] * seqlen_q)
                 continue
             for i in range(seq.num_cached_blocks, len(seq.block_table)):
                 if i == seq.num_cached_blocks:
@@ -481,65 +423,63 @@ class ModelRunner:
                 else:
                     end = (seq.block_table[i] + 1) * self.block_size
                 slot_mapping.extend(list(range(start, end)))
-        if (
-            cu_seqlens_k is not None
-            and cu_seqlens_k[-1] > cu_seqlens_q[-1]
-        ):    # prefix cache or decoding
-            block_tables = self.prepare_block_tables(seqs)
-        num_pages = len(page_indices) if page_indices is not None else None
-        num_prefill_pages = (
-            page_kv_indptr[num_prefill_seqs]
-            if page_kv_indptr is not None
+        block_tables = (
+            self.prepare_block_tables(seqs)
+            if has_paged_cache
             else None
+        )
+        block_counts = (
+            tuple(len(seq.block_table) for seq in seqs)
+            if has_paged_cache
+            else ()
+        )
+        num_kv_blocks = (
+            sum(block_counts)
+            if has_paged_cache
+            else 0
+        )
+        num_prefill_kv_blocks = (
+            sum(
+                len(seq.block_table)
+                for seq in seqs[:num_prefill_seqs]
+            )
+            if has_paged_cache
+            else 0
         )
         input_ids = torch.tensor(input_ids, dtype=torch.int64, pin_memory=True).cuda(non_blocking=True)
         positions = torch.tensor(positions, dtype=torch.int64, pin_memory=True).cuda(non_blocking=True)
-        cu_seqlens_q = torch.tensor(cu_seqlens_q, dtype=torch.int32, pin_memory=True).cuda(non_blocking=True)
-        if cu_seqlens_k is not None:
-            cu_seqlens_k = torch.tensor(
-                cu_seqlens_k, dtype=torch.int32, pin_memory=True
-            ).cuda(non_blocking=True)
+        query_start_loc = torch.tensor(
+            query_start_loc, dtype=torch.int32, pin_memory=True
+        ).cuda(non_blocking=True)
+        seq_lens = torch.tensor(
+            seq_lens, dtype=torch.int32, pin_memory=True
+        ).cuda(non_blocking=True)
         slot_mapping = torch.tensor(slot_mapping, dtype=torch.int32, pin_memory=True).cuda(non_blocking=True)
-        if context_lens is not None:
-            context_lens = torch.tensor(
-                context_lens, dtype=torch.int32, pin_memory=True
-            ).cuda(non_blocking=True)
         if has_paged_cache:
             seq_need_compute_logits = torch.tensor(
                 seq_need_compute_logits, dtype=torch.int32, pin_memory=True
             ).cuda(non_blocking=True)
         else:
             seq_need_compute_logits = None
-        if page_kv_indptr is not None:
-            page_kv_indptr = torch.tensor(
-                page_kv_indptr, dtype=torch.int32, pin_memory=True
-            ).cuda(non_blocking=True)
-            page_indices = torch.tensor(
-                page_indices, dtype=torch.int32, pin_memory=True
-            ).cuda(non_blocking=True)
-            page_last_page_len = torch.tensor(
-                page_last_page_len, dtype=torch.int32, pin_memory=True
-            ).cuda(non_blocking=True)
-        set_context(
-            cu_seqlens_q=cu_seqlens_q,
-            cu_seqlens_k=cu_seqlens_k,
-            max_seqlen_q=max_seqlen_q,
-            max_seqlen_k=max_seqlen_k,
-            slot_mapping=slot_mapping,
-            context_lens=context_lens,
-            block_tables=block_tables,
-            seq_need_compute_logits=seq_need_compute_logits,
-            page_q_indptr=cu_seqlens_q if use_page_metadata else None,
-            page_kv_indptr=page_kv_indptr,
-            page_indices=page_indices,
-            page_last_page_len=page_last_page_len,
-            page_metadata_trusted=use_page_metadata,
-            num_pages=num_pages,
-            num_prefill_pages=num_prefill_pages,
+        attention_metadata = CommonAttentionMetadata(
             num_prefill_seqs=num_prefill_seqs,
+            num_decode_seqs=num_decode_seqs,
             num_prefill_tokens=num_prefill_tokens,
             num_decode_tokens=num_decode_tokens,
-            batch_type=batch_type,
+            query_start_loc=query_start_loc,
+            seq_lens=seq_lens,
+            slot_mapping=slot_mapping,
+            block_tables=block_tables,
+            max_q_len=max_q_len,
+            max_kv_len=max_kv_len,
+            block_counts=block_counts,
+            num_kv_blocks=num_kv_blocks,
+            num_prefill_kv_blocks=num_prefill_kv_blocks,
+            trusted=True,
+        )
+        set_context(
+            attention_metadata=attention_metadata,
+            seq_need_compute_logits=seq_need_compute_logits,
         )
         return input_ids, positions
 
@@ -556,13 +496,16 @@ class ModelRunner:
     @torch.inference_mode()
     def run_model(self, input_ids: torch.Tensor, positions: torch.Tensor):
         context = get_context()
+        metadata = context.attention_metadata
+        if metadata is None:
+            raise RuntimeError("attention metadata was not prepared")
+        context.attention_plan = self.attention_backend.build_plan(metadata)
         runtime_mode, graph_state = self.select_runtime_mode(
             context,
             input_ids,
         )
         context.runtime_mode = runtime_mode
         if runtime_mode is RuntimeExecutionMode.EAGER:
-            self.attention_backend.plan(context)
             hidden_states = self.model(input_ids, positions)
         else:
             assert graph_state is not None
@@ -585,34 +528,33 @@ class ModelRunner:
 
         if self.cudagraph_policy is CUDAGraphPolicy.NONE:
             return RuntimeExecutionMode.EAGER, None
-        if context.batch_type is not BatchType.PURE_DECODE:
+        plan = context.attention_plan
+        metadata = context.attention_metadata
+        if plan is None or metadata is None:
             return eager_fallback()
-        if self.config.attention_mode != "unified":
+        if plan.batch_type is not BatchType.PURE_DECODE:
             return eager_fallback()
         if not self.attention_backend.supports_full_decode_graph:
             return eager_fallback()
         if self.world_size != 1:
             return eager_fallback()
-        if context.num_prefill_seqs != 0:
+        if metadata.num_prefill_seqs != 0:
             return eager_fallback()
-        if context.num_prefill_tokens != 0:
+        if metadata.num_prefill_tokens != 0:
             return eager_fallback()
 
-        q_indptr = context.page_q_indptr
-        last_page_len = context.page_last_page_len
+        q_indptr = metadata.query_start_loc
         if not isinstance(q_indptr, torch.Tensor):
             return eager_fallback()
-        if not isinstance(last_page_len, torch.Tensor):
-            return eager_fallback()
-        num_requests = last_page_len.numel()
-        if context.num_decode_tokens != num_requests:
+        num_requests = metadata.num_decode_seqs
+        if metadata.num_decode_tokens != num_requests:
             return eager_fallback()
         if input_ids.numel() != num_requests:
             return eager_fallback()
         if q_indptr.numel() != num_requests + 1:
             return eager_fallback()
         if (
-            getattr(context, "page_metadata_trusted", False) is not True
+            metadata.trusted is not True
             and not bool(
                 torch.all(q_indptr[1:] - q_indptr[:-1] == 1).item()
             )
@@ -635,12 +577,15 @@ class ModelRunner:
         state: DecodeGraphState,
         context,
     ) -> bool:
+        metadata = context.attention_metadata
+        plan = context.attention_plan
+        if metadata is None or plan is None:
+            return False
         batch_size = state.batch_size
         tensors = (
-            context.page_q_indptr,
-            context.page_kv_indptr,
-            context.page_indices,
-            context.page_last_page_len,
+            metadata.query_start_loc,
+            metadata.seq_lens,
+            metadata.slot_mapping,
         )
         if any(not isinstance(tensor, torch.Tensor) for tensor in tensors):
             return False
@@ -651,52 +596,34 @@ class ModelRunner:
             for tensor in tensors
         ):
             return False
-        q_indptr, kv_indptr, indices, last_page_len = tensors
+        q_indptr, seq_lens, slot_mapping = tensors
         if q_indptr.numel() != batch_size + 1:
             return False
-        if kv_indptr.numel() != batch_size + 1:
+        if seq_lens.numel() != batch_size:
             return False
-        if last_page_len.numel() != batch_size:
+        if slot_mapping.numel() != batch_size:
             return False
-        if indices.numel() > state.page_indices_capacity:
+        block_tables = metadata.block_tables
+        if (
+            not isinstance(block_tables, torch.Tensor)
+            or block_tables.dtype != torch.int32
+            or block_tables.device.type != "cuda"
+            or block_tables.ndim != 2
+            or block_tables.size(0) != batch_size
+        ):
             return False
-        if getattr(context, "page_metadata_trusted", False) is True:
-            num_pages = getattr(context, "num_pages", None)
-            num_prefill_pages = getattr(context, "num_prefill_pages", None)
-            if type(num_pages) is not int or num_pages != indices.numel():
-                return False
-            if type(num_prefill_pages) is not int or num_prefill_pages != 0:
-                return False
-        else:
+        if metadata.trusted is not True:
             if int(q_indptr[0].item()) != 0:
                 return False
             if int(q_indptr[-1].item()) != batch_size:
                 return False
-            if int(kv_indptr[0].item()) != 0:
+            if not bool(torch.all(seq_lens > 0).item()):
                 return False
-            if int(kv_indptr[-1].item()) != indices.numel():
+            if not bool(torch.all(slot_mapping >= -1).item()):
                 return False
-            if not bool(torch.all(kv_indptr[1:] >= kv_indptr[:-1]).item()):
-                return False
-            valid_last_page = (last_page_len > 0) & (
-                last_page_len <= self.block_size
-            )
-            if not bool(torch.all(valid_last_page).item()):
-                return False
-            if indices.numel() and (
-                int(indices.min().item()) < 0
-                or int(indices.max().item())
-                >= self.config.num_kvcache_blocks
-            ):
-                return False
-        slot_mapping = context.slot_mapping
-        if not isinstance(slot_mapping, torch.Tensor):
-            return False
-        if (
-            slot_mapping.dtype != torch.int32
-            or slot_mapping.device.type != "cuda"
-            or slot_mapping.ndim != 1
-            or slot_mapping.numel() != batch_size
+        if not self.attention_backend.full_decode_graph_metadata_fits(
+            state.attention_state,
+            plan,
         ):
             return False
         return True
@@ -708,10 +635,19 @@ class ModelRunner:
         input_ids: torch.Tensor,
         positions: torch.Tensor,
     ) -> torch.Tensor:
-        self.attention_backend.plan_full_decode_graph(state.wrapper, context)
+        metadata = context.attention_metadata
+        plan = context.attention_plan
+        if metadata is None or plan is None:
+            raise RuntimeError(
+                "decode graph replay requires attention metadata and plan"
+            )
+        self.attention_backend.plan_full_decode_graph(
+            state.attention_state,
+            plan,
+        )
         state.static_input_ids.copy_(input_ids)
         state.static_positions.copy_(positions)
-        state.static_slot_mapping.copy_(context.slot_mapping)
+        state.static_slot_mapping.copy_(metadata.slot_mapping)
         assert state.cuda_graph is not None
         state.cuda_graph.replay()
         self._cudagraph_stats["full_graph_replay_steps"] += 1
@@ -765,68 +701,44 @@ class ModelRunner:
                 dtype=torch.int32,
                 device=device,
             )
-            capture_kv_indptr = torch.arange(
-                batch_size + 1,
-                dtype=torch.int32,
-                device=device,
-            )
-            capture_indices = torch.zeros(
+            capture_seq_lens = torch.ones(
                 batch_size,
                 dtype=torch.int32,
                 device=device,
             )
-            capture_last_page_len = torch.ones(
-                batch_size,
+            capture_block_tables = torch.zeros(
+                (batch_size, 1),
                 dtype=torch.int32,
                 device=device,
             )
-            set_context(
-                cu_seqlens_q=capture_q_indptr,
-                max_seqlen_q=1,
-                max_seqlen_k=1,
-                slot_mapping=state.static_slot_mapping,
-                page_q_indptr=capture_q_indptr,
-                page_kv_indptr=capture_kv_indptr,
-                page_indices=capture_indices,
-                page_last_page_len=capture_last_page_len,
-                page_metadata_trusted=True,
-                num_pages=batch_size,
-                num_prefill_pages=0,
+            metadata = CommonAttentionMetadata(
                 num_prefill_seqs=0,
+                num_decode_seqs=batch_size,
                 num_prefill_tokens=0,
                 num_decode_tokens=batch_size,
-                batch_type=BatchType.PURE_DECODE,
+                query_start_loc=capture_q_indptr,
+                seq_lens=capture_seq_lens,
+                slot_mapping=state.static_slot_mapping,
+                block_tables=capture_block_tables,
+                max_q_len=1,
+                max_kv_len=1,
+                block_counts=(1,) * batch_size,
+                num_kv_blocks=batch_size,
+                num_prefill_kv_blocks=0,
+                trusted=True,
+            )
+            plan = self.attention_backend.build_plan(metadata)
+            set_context(
+                attention_metadata=metadata,
+                attention_plan=plan,
                 runtime_mode=RuntimeExecutionMode.FULL_GRAPH,
             )
             self.attention_backend.plan_full_decode_graph(
-                state.wrapper,
-                get_context(),
+                state.attention_state,
+                plan,
             )
-
-            # The graph sees only fixed-address state buffers populated by the
-            # graph-aware FlashInfer wrapper's plan above.
-            set_context(
-                cu_seqlens_q=state.static_page_q_indptr,
-                max_seqlen_q=1,
-                max_seqlen_k=1,
-                slot_mapping=state.static_slot_mapping,
-                page_q_indptr=state.static_page_q_indptr,
-                page_kv_indptr=state.static_page_kv_indptr,
-                page_indices=state.static_page_indices[:batch_size],
-                page_last_page_len=state.static_page_last_page_len,
-                page_metadata_trusted=True,
-                num_pages=batch_size,
-                num_prefill_pages=0,
-                num_prefill_seqs=0,
-                num_prefill_tokens=0,
-                num_decode_tokens=batch_size,
-                batch_type=BatchType.PURE_DECODE,
-                runtime_mode=RuntimeExecutionMode.FULL_GRAPH,
-            )
-
             self.attention_backend.activate_full_decode_graph(
-                state.wrapper,
-                state.static_attention_output,
+                state.attention_state,
             )
             try:
                 state.static_hidden_output.copy_(

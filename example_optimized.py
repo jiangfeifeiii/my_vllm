@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Run nano-vLLM with the optimized FlashInfer execution path enabled."""
+"""Run nano-vLLM with automatic attention selection and optimized ops."""
 
 import argparse
 import atexit
@@ -37,10 +37,28 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--gpu-memory-utilization", type=float, default=0.35)
     parser.add_argument("--seed", type=int, default=0)
     parser.add_argument(
+        "--attention-backend",
+        choices=("auto", "flashattention", "flashinfer", "legacy"),
+        default="auto",
+        help=(
+            "attention backend registry selection; legacy is a "
+            "FlashAttention compatibility alias"
+        ),
+    )
+    parser.add_argument(
         "--attention-mode",
         choices=("unified", "split"),
         default="unified",
-        help="FlashInfer attention execution mode.",
+        help="mixed-batch execution mode; split requires FlashInfer",
+    )
+    parser.add_argument(
+        "--kvcache-block-size",
+        type=int,
+        default=16,
+        help=(
+            "KV-cache page size; Dao FlashAttention requires a multiple "
+            "of 256"
+        ),
     )
     parser.add_argument(
         "--cudagraph-mode",
@@ -97,11 +115,12 @@ def print_runtime_configuration(llm) -> None:
     bindings = collect_operator_bindings(llm)
     attention_backend = llm.model_runner.attention_backend
     print("\nEnabled runtime configuration")
-    print(f"  attention backend : {type(llm.model_runner.attention_backend).__name__}")
+    print(f"  backend requested : {config.attention_backend}")
+    print(f"  backend selected  : {attention_backend.backend_name}")
     print(f"  attention mode    : {config.attention_mode}")
     if hasattr(attention_backend, "mixed_attention_available"):
         print(
-            "  holistic mixed    : "
+            "  unified mixed     : "
             f"{attention_backend.mixed_attention_available}"
         )
         reason = attention_backend.mixed_attention_unavailable_reason
@@ -170,8 +189,19 @@ def main() -> None:
     model_path = Path(args.model).expanduser().resolve()
     if not model_path.is_dir():
         raise SystemExit(f"model directory does not exist: {model_path}")
-    if args.batch_tokens <= 0 or args.max_model_len <= 1:
-        raise SystemExit("batch/model token limits must be positive")
+    if (
+        args.batch_tokens <= 0
+        or args.max_model_len <= 1
+        or args.kvcache_block_size <= 0
+    ):
+        raise SystemExit("batch/model/page limits must be positive")
+    if (
+        args.attention_backend in ("flashattention", "legacy")
+        and args.kvcache_block_size % 256
+    ):
+        raise SystemExit(
+            "Dao FlashAttention requires --kvcache-block-size divisible by 256"
+        )
     if args.batch_tokens >= args.max_model_len:
         raise SystemExit(
             "--batch-tokens must be smaller than --max-model-len "
@@ -195,8 +225,8 @@ def main() -> None:
 
     shared_sentence = (
         "Nano-vLLM is a lightweight inference engine using paged KV cache, "
-        "FlashInfer attention, chunked prefill, longest-prefix matching, and "
-        "statically bound GPU operators."
+        "registry-selected attention, chunked prefill, longest-prefix "
+        "matching, and statically bound GPU operators."
     )
     shared_context = shared_sentence
     prime_prompt = build_chat_prompt(
@@ -258,9 +288,9 @@ def main() -> None:
             str(model_path),
             cudagraph_mode=CUDAGraphPolicy(args.cudagraph_mode),
             tensor_parallel_size=1,
-            attention_backend="flashinfer",
+            attention_backend=args.attention_backend,
             attention_mode=args.attention_mode,
-            kvcache_block_size=16,
+            kvcache_block_size=args.kvcache_block_size,
             chunked_prefill=True,
             operator_overrides=OPERATOR_OVERRIDES,
             max_model_len=args.max_model_len,

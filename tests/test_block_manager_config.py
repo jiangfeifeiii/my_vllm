@@ -16,10 +16,10 @@ def _config(tmp_path, **kwargs) -> Config:
         return Config(str(tmp_path), **kwargs)
 
 
-def test_flashinfer_defaults_to_block_size_16(tmp_path):
+def test_auto_attention_defaults_to_block_size_16(tmp_path):
     config = _config(tmp_path)
 
-    assert config.attention_backend == "flashinfer"
+    assert config.attention_backend == "auto"
     assert config.enable_lpm is True
     assert config.enable_same_step_prefix_reuse is True
     assert config.kvcache_block_size == 16
@@ -29,8 +29,10 @@ def test_flashinfer_defaults_to_block_size_16(tmp_path):
 @pytest.mark.parametrize(
     ("attention_backend", "block_size"),
     [
+        ("auto", 16),
         ("flashinfer", 16),
         ("flashinfer", 7),
+        ("flashattention", 256),
         ("legacy", 256),
         ("legacy", 512),
     ],
@@ -50,21 +52,25 @@ def test_attention_backend_accepts_supported_block_sizes(
 
 @pytest.mark.parametrize("attention_mode", ["unified", "split"])
 def test_flashinfer_accepts_attention_modes(tmp_path, attention_mode: str):
-    config = _config(tmp_path, attention_mode=attention_mode)
+    config = _config(
+        tmp_path,
+        attention_backend="flashinfer",
+        attention_mode=attention_mode,
+    )
 
     assert config.attention_mode == attention_mode
 
 
 @pytest.mark.parametrize("attention_mode", ["auto", "", "decode"])
 def test_rejects_unknown_attention_mode(tmp_path, attention_mode: str):
-    with pytest.raises(AssertionError):
+    with pytest.raises(ValueError, match="attention_mode"):
         _config(tmp_path, attention_mode=attention_mode)
 
 
 def test_legacy_rejects_split_attention_mode(tmp_path):
     with pytest.raises(
-        AssertionError,
-        match="legacy attention supports only",
+        ValueError,
+        match="FlashAttention supports only",
     ):
         _config(
             tmp_path,
@@ -87,7 +93,7 @@ def test_legacy_rejects_split_attention_mode(tmp_path):
 def test_attention_backend_rejects_invalid_block_sizes(
     tmp_path, attention_backend: str, block_size: int
 ):
-    with pytest.raises(AssertionError):
+    with pytest.raises(ValueError):
         _config(
             tmp_path,
             attention_backend=attention_backend,

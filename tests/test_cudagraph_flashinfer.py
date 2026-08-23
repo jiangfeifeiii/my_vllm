@@ -18,7 +18,6 @@ import os
 from pathlib import Path
 import subprocess
 import sys
-from types import SimpleNamespace
 
 import pytest
 import torch
@@ -28,6 +27,7 @@ from nanovllm.config import CUDAGraphPolicy
 from nanovllm.engine.sequence import Sequence
 from nanovllm.utils.context import (
     BatchType,
+    CommonAttentionMetadata,
     RuntimeExecutionMode,
     get_context,
     reset_context,
@@ -167,7 +167,7 @@ def _run_model_runner_exact_buckets_eager_vs_full_graph():
         assert torch.count_nonzero(runner.kv_cache[:, :, 0]).item() == 0
 
         wrappers = [
-            runner.decode_graph_states[size].wrapper
+            runner.decode_graph_states[size].attention_state.wrapper
             for size in GRAPH_BUCKETS
         ]
         assert len({id(wrapper) for wrapper in wrappers}) == len(GRAPH_BUCKETS)
@@ -203,8 +203,13 @@ def _run_model_runner_exact_buckets_eager_vs_full_graph():
                     num_prefill_seqs=0,
                 )
                 context = get_context()
+                metadata = context.attention_metadata
+                assert metadata is not None
+                context.attention_plan = (
+                    runner.attention_backend.build_plan(metadata)
+                )
                 assert context.batch_type is BatchType.PURE_DECODE
-                assert context.num_decode_tokens == batch_size
+                assert metadata.num_decode_tokens == batch_size
                 assert input_ids.shape == (batch_size,)
 
                 with torch.inference_mode():
@@ -216,7 +221,6 @@ def _run_model_runner_exact_buckets_eager_vs_full_graph():
                     assert eager_mode is RuntimeExecutionMode.EAGER
                     assert eager_state is None
                     context.runtime_mode = eager_mode
-                    runner.attention_backend.plan(context)
                     eager_hidden = runner.model(input_ids, positions).clone()
                     eager_logits = runner.model.compute_logits(
                         eager_hidden
@@ -268,7 +272,7 @@ def _run_model_runner_exact_buckets_eager_vs_full_graph():
         assert final_stats["eager_fallback_steps"] == 0
 
 
-def _backend_decode_context(
+def _backend_decode_metadata(
     kv_length: int,
     *,
     case_index: int,
@@ -289,33 +293,27 @@ def _backend_decode_context(
         local_pages + request_index * max_pages_per_request
         for request_index in range(batch_size)
     ]
-    page_indices = torch.cat(request_indices)
-    page_q_indptr = torch.arange(
-        batch_size + 1, dtype=torch.int32, device="cuda"
-    )
-    page_kv_indptr = torch.arange(
-        0,
-        (batch_size + 1) * pages_per_request,
-        pages_per_request,
-        dtype=torch.int32,
-        device="cuda",
-    )
-    last_page_len = kv_length % block_size or block_size
-    page_last_page_len = torch.full(
-        (batch_size,),
-        last_page_len,
-        dtype=torch.int32,
-        device="cuda",
-    )
-    return SimpleNamespace(
-        page_q_indptr=page_q_indptr,
-        page_kv_indptr=page_kv_indptr,
-        page_indices=page_indices,
-        page_last_page_len=page_last_page_len,
+    return CommonAttentionMetadata(
         num_prefill_seqs=0,
+        num_decode_seqs=batch_size,
         num_prefill_tokens=0,
         num_decode_tokens=batch_size,
-        batch_type=BatchType.PURE_DECODE,
+        query_start_loc=torch.arange(
+            batch_size + 1, dtype=torch.int32, device="cuda"
+        ),
+        seq_lens=torch.full(
+            (batch_size,), kv_length, dtype=torch.int32, device="cuda"
+        ),
+        slot_mapping=torch.arange(
+            batch_size, dtype=torch.int32, device="cuda"
+        ),
+        block_tables=torch.stack(request_indices),
+        max_q_len=1,
+        max_kv_len=kv_length,
+        block_counts=(pages_per_request,) * batch_size,
+        num_kv_blocks=batch_size * pages_per_request,
+        num_prefill_kv_blocks=0,
+        trusted=True,
     )
 
 
@@ -344,38 +342,26 @@ def _run_graph_wrapper_replan_metadata_freshness_across_kv_boundaries():
         dtype,
         attention_mode="unified",
     )
-    fixed_q_indptr = torch.empty(
-        batch_size + 1, dtype=torch.int32, device=device
-    )
-    fixed_kv_indptr = torch.empty_like(fixed_q_indptr)
-    fixed_indices = torch.empty(
+    state = backend.create_full_decode_graph_state(
+        batch_size,
         batch_size * max_pages_per_request,
-        dtype=torch.int32,
-        device=device,
+        device,
     )
-    fixed_last_page_len = torch.empty(
-        batch_size, dtype=torch.int32, device=device
-    )
-    wrapper = backend.create_full_decode_graph_wrapper(
-        fixed_q_indptr,
-        fixed_kv_indptr,
-        fixed_indices,
-        fixed_last_page_len,
-    )
+    wrapper = state.wrapper
+    fixed_q_indptr = state.query_start_loc_buffer
+    fixed_kv_indptr = state.kv_indptr_buffer
+    fixed_indices = state.page_indices_buffer
+    fixed_last_page_len = state.last_page_len_buffer
 
-    # Creating another exact-batch wrapper must not alias its wrapper state,
-    # although serial graph wrappers deliberately share one stable workspace.
+    # Backend graph states do not alias wrapper state, although serial graph
+    # wrappers deliberately share one stable workspace.
     second_batch_size = 4
-    second_wrapper = backend.create_full_decode_graph_wrapper(
-        torch.empty(second_batch_size + 1, dtype=torch.int32, device=device),
-        torch.empty(second_batch_size + 1, dtype=torch.int32, device=device),
-        torch.empty(
-            second_batch_size * max_pages_per_request,
-            dtype=torch.int32,
-            device=device,
-        ),
-        torch.empty(second_batch_size, dtype=torch.int32, device=device),
+    second_state = backend.create_full_decode_graph_state(
+        second_batch_size,
+        second_batch_size * max_pages_per_request,
+        device,
     )
+    second_wrapper = second_state.wrapper
     assert wrapper is not second_wrapper
     assert backend.graph_workspace is not None
     assert {
@@ -405,17 +391,18 @@ def _run_graph_wrapper_replan_metadata_freshness_across_kv_boundaries():
         dtype=dtype,
         device=device,
     )
-    static_output = torch.empty_like(static_q)
+    static_output = state.output
 
-    capture_context = _backend_decode_context(
+    capture_metadata = _backend_decode_metadata(
         15,
         case_index=0,
         batch_size=batch_size,
         block_size=block_size,
         max_pages_per_request=max_pages_per_request,
     )
-    backend.plan_full_decode_graph(wrapper, capture_context)
-    backend.activate_full_decode_graph(wrapper, static_output)
+    capture_plan = backend.build_plan(capture_metadata)
+    backend.plan_full_decode_graph(state, capture_plan)
+    backend.activate_full_decode_graph(state)
     try:
         # Warm all dispatch and kernel paths before entering stream capture.
         backend.forward(
@@ -424,7 +411,7 @@ def _run_graph_wrapper_replan_metadata_freshness_across_kv_boundaries():
             unused_v,
             k_cache,
             v_cache,
-            capture_context,
+            capture_plan,
         )
         torch.cuda.synchronize()
 
@@ -436,7 +423,7 @@ def _run_graph_wrapper_replan_metadata_freshness_across_kv_boundaries():
                 unused_v,
                 k_cache,
                 v_cache,
-                capture_context,
+                capture_plan,
             )
         torch.cuda.synchronize()
     finally:
@@ -448,7 +435,7 @@ def _run_graph_wrapper_replan_metadata_freshness_across_kv_boundaries():
     kv_lengths = (4096, 15, 2048, 16, 512, 17, 4096)
     try:
         for case_index, kv_length in enumerate(kv_lengths, start=1):
-            context = _backend_decode_context(
+            metadata = _backend_decode_metadata(
                 kv_length,
                 case_index=case_index,
                 batch_size=batch_size,
@@ -457,31 +444,39 @@ def _run_graph_wrapper_replan_metadata_freshness_across_kv_boundaries():
             )
             query = torch.randn_like(static_q)
 
-            # plan() is outside the graph and copies only active metadata into
-            # the wrapper's fixed-capacity buffers.
-            backend.plan_full_decode_graph(wrapper, context)
-            active_pages = context.page_indices.numel()
-            assert torch.equal(fixed_q_indptr, context.page_q_indptr)
-            assert torch.equal(fixed_kv_indptr, context.page_kv_indptr)
+            # Planning remains outside the graph. Backend-specific CSR metadata
+            # is derived from the common dense block table and copied into the
+            # graph state's fixed-capacity buffers.
+            plan = backend.build_plan(metadata)
+            backend.plan_full_decode_graph(state, plan)
+            backend_metadata = plan.backend_metadata
+            active_pages = backend_metadata.page_indices.numel()
             assert torch.equal(
-                fixed_indices[:active_pages], context.page_indices
+                fixed_q_indptr, backend_metadata.query_start_loc
             )
             assert torch.equal(
-                fixed_last_page_len, context.page_last_page_len
+                fixed_kv_indptr, backend_metadata.kv_indptr
+            )
+            assert torch.equal(
+                fixed_indices[:active_pages],
+                backend_metadata.page_indices,
+            )
+            assert torch.equal(
+                fixed_last_page_len,
+                backend_metadata.last_page_len,
             )
 
             static_q.copy_(query)
             graph.replay()
             graph_output = static_output.clone()
 
-            backend.plan(context)
             eager_output = backend.forward(
                 query,
                 unused_k,
                 unused_v,
                 k_cache,
                 v_cache,
-                context,
+                plan,
             )
             assert torch.isfinite(graph_output).all()
             torch.testing.assert_close(
@@ -494,7 +489,9 @@ def _run_graph_wrapper_replan_metadata_freshness_across_kv_boundaries():
         torch.cuda.synchronize()
         del graph
         del second_wrapper
+        del second_state
         del wrapper
+        del state
         del backend
         torch.cuda.empty_cache()
 

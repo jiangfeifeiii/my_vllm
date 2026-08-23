@@ -7,7 +7,12 @@ import torch
 import nanovllm.engine.model_runner as model_runner_module
 from nanovllm.config import CUDAGraphPolicy, Config
 from nanovllm.engine.model_runner import DecodeGraphState, ModelRunner
-from nanovllm.utils.context import BatchType, RuntimeExecutionMode
+from nanovllm.utils.context import (
+    BatchType,
+    CommonAttentionMetadata,
+    Context,
+    RuntimeExecutionMode,
+)
 
 
 class _FakeCudaIntTensor(torch.Tensor):
@@ -39,6 +44,12 @@ def _config(tmp_path, **kwargs) -> Config:
         return Config(str(tmp_path), **kwargs)
 
 
+class _OpaqueAttentionState:
+
+    def __init__(self, page_capacity: int):
+        self.page_capacity = page_capacity
+
+
 def _graph_state(
     batch_size: int,
     *,
@@ -52,25 +63,13 @@ def _graph_state(
     )
     return DecodeGraphState(
         batch_size=batch_size,
-        page_indices_capacity=capacity,
-        wrapper=object(),
+        attention_state=_OpaqueAttentionState(capacity),
         cuda_graph=_FakeGraph() if captured else None,
         static_input_ids=torch.full((batch_size,), -1, dtype=torch.int64),
         static_positions=torch.full((batch_size,), -1, dtype=torch.int64),
         static_slot_mapping=torch.full(
             (batch_size,), -1, dtype=torch.int32
         ),
-        static_page_q_indptr=torch.empty(
-            batch_size + 1, dtype=torch.int32
-        ),
-        static_page_kv_indptr=torch.empty(
-            batch_size + 1, dtype=torch.int32
-        ),
-        static_page_indices=torch.empty(capacity, dtype=torch.int32),
-        static_page_last_page_len=torch.empty(
-            batch_size, dtype=torch.int32
-        ),
-        static_attention_output=torch.empty(batch_size, 1, 1),
         static_hidden_output=torch.arange(
             batch_size * 3, dtype=torch.float32
         ).reshape(batch_size, 3),
@@ -80,19 +79,19 @@ def _graph_state(
 def _runner(
     *,
     policy: CUDAGraphPolicy = CUDAGraphPolicy.FULL_DECODE_ONLY,
-    attention_mode: str = "unified",
     supports_full_decode_graph: bool = True,
     world_size: int = 1,
     states: dict[int, DecodeGraphState] | None = None,
 ) -> ModelRunner:
+    def metadata_fits(attention_state, plan):
+        return plan.num_kv_blocks <= attention_state.page_capacity
+
     runner = object.__new__(ModelRunner)
     runner.cudagraph_policy = policy
-    runner.config = SimpleNamespace(
-        attention_mode=attention_mode,
-        num_kvcache_blocks=4096,
-    )
+    runner.config = SimpleNamespace(num_kvcache_blocks=4096)
     runner.attention_backend = SimpleNamespace(
         supports_full_decode_graph=supports_full_decode_graph,
+        full_decode_graph_metadata_fits=Mock(side_effect=metadata_fits),
         plan_full_decode_graph=Mock(),
     )
     runner.world_size = world_size
@@ -115,24 +114,54 @@ def _decode_context(
     pages_per_request: int = 1,
     batch_type: BatchType = BatchType.PURE_DECODE,
     trusted: bool = False,
+    query_start_loc=None,
+    seq_lens=None,
+    slot_mapping=None,
+    block_tables=None,
 ):
     num_pages = batch_size * pages_per_request
-    return SimpleNamespace(
-        batch_type=batch_type,
-        num_prefill_seqs=0,
-        num_prefill_tokens=0,
-        num_decode_tokens=batch_size,
-        page_q_indptr=_FakeCudaIntTensor(range(batch_size + 1)),
-        page_kv_indptr=_FakeCudaIntTensor(
-            range(0, num_pages + 1, pages_per_request)
-        ),
-        page_indices=_FakeCudaIntTensor(range(num_pages)),
-        page_last_page_len=_FakeCudaIntTensor([16] * batch_size),
-        page_metadata_trusted=trusted,
-        num_pages=num_pages if trusted else None,
-        num_prefill_pages=0 if trusted else None,
-        slot_mapping=_FakeCudaIntTensor(range(batch_size)),
+    if query_start_loc is None:
+        query_start_loc = range(batch_size + 1)
+    if seq_lens is None:
+        seq_lens = [pages_per_request * 16] * batch_size
+    if slot_mapping is None:
+        slot_mapping = range(batch_size)
+    if block_tables is None:
+        block_tables = [
+            [
+                request_index * pages_per_request + page_index
+                for page_index in range(pages_per_request)
+            ]
+            for request_index in range(batch_size)
+        ]
+
+    if batch_type is BatchType.PURE_PREFILL:
+        num_prefill_seqs, num_decode_seqs = batch_size, 0
+    elif batch_type is BatchType.MIXED:
+        num_prefill_seqs, num_decode_seqs = 1, batch_size - 1
+    else:
+        num_prefill_seqs, num_decode_seqs = 0, batch_size
+    metadata = CommonAttentionMetadata(
+        num_prefill_seqs=num_prefill_seqs,
+        num_decode_seqs=num_decode_seqs,
+        num_prefill_tokens=num_prefill_seqs,
+        num_decode_tokens=num_decode_seqs,
+        query_start_loc=_FakeCudaIntTensor(query_start_loc),
+        seq_lens=_FakeCudaIntTensor(seq_lens),
+        slot_mapping=_FakeCudaIntTensor(slot_mapping),
+        block_tables=_FakeCudaIntTensor(block_tables),
+        max_q_len=1,
+        max_kv_len=max(seq_lens),
+        block_counts=(pages_per_request,) * batch_size,
+        num_kv_blocks=num_pages,
+        num_prefill_kv_blocks=num_prefill_seqs * pages_per_request,
+        trusted=trusted,
     )
+    plan = SimpleNamespace(
+        batch_type=batch_type,
+        num_kv_blocks=num_pages,
+    )
+    return Context(attention_metadata=metadata, attention_plan=plan)
 
 
 def _select(runner: ModelRunner, context, num_input_tokens: int):
@@ -228,21 +257,18 @@ def test_prefill_and_mixed_batches_fall_back_to_eager(batch_type):
 
 
 @pytest.mark.parametrize(
-    ("attention_mode", "supports_graph", "world_size"),
+    ("supports_graph", "world_size"),
     [
-        ("split", True, 1),
-        ("unified", False, 1),
-        ("unified", True, 2),
+        (False, 1),
+        (True, 2),
     ],
-    ids=("split", "backend-capability-false", "tensor-parallel"),
+    ids=("backend-capability-false", "tensor-parallel"),
 )
-def test_unsupported_attention_or_tp_falls_back(
-    attention_mode,
+def test_unsupported_backend_or_tp_falls_back(
     supports_graph,
     world_size,
 ):
     runner = _runner(
-        attention_mode=attention_mode,
         supports_full_decode_graph=supports_graph,
         world_size=world_size,
         states={4: _graph_state(4)},
@@ -259,13 +285,17 @@ def test_unsupported_attention_or_tp_falls_back(
 @pytest.mark.parametrize("malformation", ["q_indptr_size", "q_len", "input"])
 def test_non_decode_query_shape_falls_back(malformation):
     runner = _runner(states={4: _graph_state(4)})
-    context = _decode_context(4)
     num_input_tokens = 4
     if malformation == "q_indptr_size":
-        context.page_q_indptr = _FakeCudaIntTensor([0, 1, 2, 4])
+        context = _decode_context(
+            4, query_start_loc=[0, 1, 2, 4]
+        )
     elif malformation == "q_len":
-        context.page_q_indptr = _FakeCudaIntTensor([0, 2, 2, 3, 4])
+        context = _decode_context(
+            4, query_start_loc=[0, 2, 2, 3, 4]
+        )
     else:
+        context = _decode_context(4)
         num_input_tokens = 5
 
     mode, selected = _select(runner, context, num_input_tokens)
@@ -289,13 +319,17 @@ def test_batch_size_must_hit_an_exact_bucket_without_padding():
     assert runner._cudagraph_stats["eager_fallback_steps"] == 1
 
 
-def test_page_indices_capacity_overflow_falls_back_after_bucket_hit():
+def test_backend_attention_state_capacity_overflow_falls_back():
     state = _graph_state(4, page_indices_capacity=4)
     runner = _runner(states={4: state})
     context = _decode_context(4, pages_per_request=2)
 
-    assert context.page_indices.numel() == 8
+    assert context.attention_metadata.num_kv_blocks == 8
     assert runner.graph_metadata_fits(state, context) is False
+    runner.attention_backend.full_decode_graph_metadata_fits.assert_called_with(
+        state.attention_state,
+        context.attention_plan,
+    )
     mode, selected = _select(runner, context, 4)
 
     assert mode is RuntimeExecutionMode.EAGER
@@ -332,26 +366,29 @@ def test_trusted_metadata_uses_host_scalars_without_device_value_reads():
     assert selected is state
 
 
-@pytest.mark.parametrize(
-    ("field", "value"),
-    [("num_pages", 7), ("num_prefill_pages", 1)],
-)
-def test_trusted_metadata_rejects_host_scalar_drift(field, value):
+def test_decode_graph_state_keeps_backend_buffers_opaque():
+    state = _graph_state(4, page_indices_capacity=8)
+
+    assert isinstance(state.attention_state, _OpaqueAttentionState)
+    fields = DecodeGraphState.__dataclass_fields__
+    assert "attention_state" in fields
+    assert "wrapper" not in fields
+    assert "static_page_indices" not in fields
+    assert "static_page_kv_indptr" not in fields
+    assert "static_attention_output" not in fields
+
+
+def test_untrusted_metadata_keeps_strict_common_value_validation():
     state = _graph_state(4, page_indices_capacity=8)
     runner = _runner(states={4: state})
-    context = _decode_context(4, pages_per_request=2, trusted=True)
-    setattr(context, field, value)
+    context = _decode_context(
+        4,
+        pages_per_request=2,
+        query_start_loc=[1, 2, 3, 4, 5],
+    )
 
     assert runner.graph_metadata_fits(state, context) is False
-
-
-def test_untrusted_metadata_keeps_strict_device_value_validation():
-    state = _graph_state(4, page_indices_capacity=8)
-    runner = _runner(states={4: state})
-    context = _decode_context(4, pages_per_request=2)
-    context.page_kv_indptr = _FakeCudaIntTensor([1, 3, 5, 7, 9])
-
-    assert runner.graph_metadata_fits(state, context) is False
+    runner.attention_backend.full_decode_graph_metadata_fits.assert_not_called()
 
 
 def test_uncaptured_exact_bucket_falls_back_but_counts_bucket_hit():
@@ -382,8 +419,8 @@ def test_replay_updates_static_inputs_and_replay_statistics():
     )
 
     runner.attention_backend.plan_full_decode_graph.assert_called_once_with(
-        state.wrapper,
-        context,
+        state.attention_state,
+        context.attention_plan,
     )
     assert state.static_input_ids.tolist() == [11, 12]
     assert state.static_positions.tolist() == [31, 47]

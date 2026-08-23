@@ -3,10 +3,7 @@ from torch import nn
 import triton
 import triton.language as tl
 
-from nanovllm.layers.attention_backend import (
-    AttentionBackend,
-    LegacyFlashAttentionBackend,
-)
+from nanovllm.layers.attention_backend import AttentionBackend
 from nanovllm.layers.custom_op import CustomOp, CustomOpConfig
 from nanovllm.utils.context import get_context
 
@@ -121,13 +118,11 @@ class Attention(nn.Module):
         self.scale = scale
         self.num_kv_heads = num_kv_heads
         self.k_cache = self.v_cache = torch.tensor([])
-        self.backend = attention_backend or LegacyFlashAttentionBackend(
-            num_q_heads=num_heads,
-            num_kv_heads=num_kv_heads,
-            head_dim=head_dim,
-            block_size=256,
-            dtype=torch.get_default_dtype(),
-        )
+        if attention_backend is None:
+            raise ValueError(
+                "Attention requires a selected AttentionBackend instance"
+            )
+        self.backend = attention_backend
         self.kv_store = KVCacheStore(
             custom_op_config=custom_op_config,
         )
@@ -135,8 +130,14 @@ class Attention(nn.Module):
 
     def forward(self, q: torch.Tensor, k: torch.Tensor, v: torch.Tensor):
         context = get_context()
+        metadata = context.attention_metadata
+        plan = context.attention_plan
+        if metadata is None or plan is None:
+            raise RuntimeError(
+                "attention metadata and plan must be prepared before forward"
+            )
         k_cache, v_cache = self.k_cache, self.v_cache
         if k_cache.numel() and v_cache.numel():
-            self.kv_store(k, v, k_cache, v_cache, context.slot_mapping)
+            self.kv_store(k, v, k_cache, v_cache, metadata.slot_mapping)
 
-        return self.backend.forward(q, k, v, k_cache, v_cache, context)
+        return self.backend.forward(q, k, v, k_cache, v_cache, plan)

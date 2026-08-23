@@ -59,7 +59,7 @@ def _detect_platform() -> str:
 
 
 class CustomOp(nn.Module):
-    """Platform-dispatched base class for ordinary, stateless operators."""
+    """Platform-dispatched base class for ordinary operators."""
 
     op_name = "custom_op"
 
