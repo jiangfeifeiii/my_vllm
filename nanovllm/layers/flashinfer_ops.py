@@ -1,11 +1,8 @@
 from collections.abc import Callable
 from importlib.util import find_spec
 import os
-from typing import Any
 
 import torch
-
-from nanovllm.layers.operators import register_operator
 
 
 def _prepare_flashinfer_environment() -> Exception | None:
@@ -56,21 +53,6 @@ else:
 FLASHINFER_AVAILABLE = FLASHINFER_IMPORT_ERROR is None
 
 
-def _supports_flashinfer(
-    *,
-    device_type: str | torch.device | None = None,
-    dtype: torch.dtype | None = None,
-    **_: Any,
-) -> bool:
-    if isinstance(device_type, torch.device):
-        device_type = device_type.type
-    return (
-        FLASHINFER_AVAILABLE
-        and device_type == "cuda"
-        and dtype in (torch.float16, torch.bfloat16)
-    )
-
-
 def _require_flashinfer(function: Callable | None, operator: str) -> Callable:
     if function is None:
         detail = (
@@ -87,93 +69,20 @@ def get_flashinfer_silu_and_mul() -> Callable:
     return _require_flashinfer(_flashinfer_silu_and_mul, "silu_and_mul")
 
 
-@register_operator(
-    "silu_and_mul",
-    "flashinfer",
-    supports=_supports_flashinfer,
-    priority=200,
-)
-def _bind_flashinfer_silu_and_mul(_owner):
-    operation = get_flashinfer_silu_and_mul()
-
-    def forward(x: torch.Tensor) -> torch.Tensor:
-        return operation(x)
-
-    return forward
+def get_flashinfer_rms_norm() -> Callable:
+    """Return the validated FlashInfer RMSNorm callable."""
+    return _require_flashinfer(_flashinfer_rmsnorm, "rms_norm")
 
 
-@register_operator(
-    "rms_norm",
-    "flashinfer",
-    supports=_supports_flashinfer,
-    priority=200,
-)
-def _bind_flashinfer_rms_norm(owner):
-    operation = _require_flashinfer(_flashinfer_rmsnorm, "rms_norm")
-
-    def forward(x: torch.Tensor) -> torch.Tensor:
-        return operation(x, owner.weight, eps=owner.eps)
-
-    return forward
-
-
-@register_operator(
-    "fused_add_rms_norm",
-    "flashinfer",
-    supports=_supports_flashinfer,
-    priority=200,
-)
-def _bind_flashinfer_fused_add_rms_norm(owner):
-    operation = _require_flashinfer(
+def get_flashinfer_fused_add_rms_norm() -> Callable:
+    """Return the validated FlashInfer fused add-RMSNorm callable."""
+    return _require_flashinfer(
         _flashinfer_fused_add_rmsnorm, "fused_add_rms_norm"
     )
 
-    def forward(
-        x: torch.Tensor,
-        residual: torch.Tensor,
-    ) -> tuple[torch.Tensor, torch.Tensor]:
-        normalized = x.clone()
-        new_residual = residual.clone()
-        operation(normalized, new_residual, owner.weight, eps=owner.eps)
-        return normalized, new_residual
 
-    def forward_inplace(
-        x: torch.Tensor,
-        residual: torch.Tensor,
-    ) -> tuple[torch.Tensor, torch.Tensor]:
-        operation(x, residual, owner.weight, eps=owner.eps)
-        return x, residual
-
-    # Keep the registered provider's public call out-of-place. Qwen3 uses the
-    # attached callable only where both incoming tensor values are dead.
-    setattr(forward, "_nanovllm_inplace", forward_inplace)
-
-    return forward
-
-
-@register_operator(
-    "rotary_embedding",
-    "flashinfer",
-    supports=_supports_flashinfer,
-    priority=200,
-)
-def _bind_flashinfer_rotary_embedding(owner):
-    operation = _require_flashinfer(
+def get_flashinfer_rotary_embedding() -> Callable:
+    """Return the validated FlashInfer rotary-embedding callable."""
+    return _require_flashinfer(
         _flashinfer_apply_rope, "rotary_embedding"
     )
-
-    def forward(
-        positions: torch.Tensor,
-        query: torch.Tensor,
-        key: torch.Tensor,
-    ) -> tuple[torch.Tensor, torch.Tensor]:
-        return operation(
-            positions,
-            query,
-            key,
-            owner.head_size,
-            owner.cos_sin_cache.squeeze(1),
-            is_neox=True,
-        )
-
-    return forward

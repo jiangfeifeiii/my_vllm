@@ -17,7 +17,10 @@ from nanovllm.layers.attention_backend import (
     LegacyFlashAttentionBackend,
 )
 from nanovllm.layers.sampler import Sampler
-from nanovllm.layers.operators import OperatorResolver, load_optional_providers
+from nanovllm.layers.custom_op import (
+    CustomOpConfig,
+    load_optional_implementations,
+)
 from nanovllm.utils.context import (
     BatchType,
     RuntimeExecutionMode,
@@ -88,11 +91,11 @@ class ModelRunner:
         default_dtype = torch.get_default_dtype()
         torch.set_default_dtype(self.dtype)
         torch.set_default_device("cuda")
-        self.optional_provider_errors = load_optional_providers()
-        self.operator_resolver = OperatorResolver(
-            config.operator_overrides,
+        self.optional_provider_errors = load_optional_implementations()
+        self.custom_op_config = CustomOpConfig(
+            platform="cuda",
             dtype=self.dtype,
-            device_type="cuda",
+            overrides=config.operator_overrides,
         )
         head_dim = getattr(
             hf_config,
@@ -140,7 +143,7 @@ class ModelRunner:
         self.model = Qwen3ForCausalLM(
             hf_config,
             attention_backend=self.attention_backend,
-            operator_resolver=self.operator_resolver,
+            custom_op_config=self.custom_op_config,
         )
         load_model(self.model, config.model)
         self.sampler = Sampler()

@@ -4,20 +4,20 @@ import torch
 import torch.nn.functional as F
 
 from nanovllm.layers.activation import SiluAndMul
+from nanovllm.layers.custom_op import CustomOpConfig
 from nanovllm.layers.flashinfer_ops import (
     FLASHINFER_AVAILABLE,
     FLASHINFER_IMPORT_ERROR,
 )
 from nanovllm.layers.layernorm import RMSNorm
-from nanovllm.layers.operators import OperatorResolver, REGISTRY
 from nanovllm.layers.rotary_embedding import RotaryEmbedding, apply_rotary_emb
 
 
-def _resolver(*operators: str, dtype: torch.dtype) -> OperatorResolver:
-    return OperatorResolver(
-        overrides={operator: "flashinfer" for operator in operators},
-        device_type="cuda",
+def _config(*operators: str, dtype: torch.dtype) -> CustomOpConfig:
+    return CustomOpConfig(
+        platform="cuda",
         dtype=dtype,
+        overrides={operator: "flashinfer" for operator in operators},
     )
 
 
@@ -25,37 +25,6 @@ def _tolerances(dtype: torch.dtype) -> tuple[float, float]:
     if dtype == torch.bfloat16:
         return 2e-2, 2e-2
     return 3e-3, 3e-3
-
-
-class FlashInferRegistrationTest(TestCase):
-
-    def test_providers_have_expected_priority_and_capability_filter(self):
-        for operator in (
-            "silu_and_mul",
-            "rms_norm",
-            "fused_add_rms_norm",
-            "rotary_embedding",
-        ):
-            with self.subTest(operator=operator):
-                provider = next(
-                    item
-                    for item in REGISTRY.providers(operator)
-                    if item.name == "flashinfer"
-                )
-                self.assertEqual(provider.priority, 200)
-                self.assertFalse(
-                    provider.supports(device_type="cpu", dtype=torch.float16)
-                )
-                self.assertFalse(
-                    provider.supports(device_type="cuda", dtype=torch.float32)
-                )
-                self.assertEqual(
-                    provider.supports(
-                        device_type=torch.device("cuda"),
-                        dtype=torch.bfloat16,
-                    ),
-                    FLASHINFER_AVAILABLE,
-                )
 
 
 _SKIP_REASON = (
@@ -77,7 +46,7 @@ class FlashInferOperatorTest(TestCase):
             with self.subTest(dtype=dtype):
                 torch.manual_seed(101)
                 layer = SiluAndMul(
-                    operator_resolver=_resolver("silu_and_mul", dtype=dtype)
+                    custom_op_config=_config("silu_and_mul", dtype=dtype)
                 ).cuda()
                 x = torch.randn(7, 256, device="cuda", dtype=dtype)
                 original = x.clone()
@@ -101,7 +70,7 @@ class FlashInferOperatorTest(TestCase):
                 layer = RMSNorm(
                     128,
                     eps=1e-6,
-                    operator_resolver=_resolver(
+                    custom_op_config=_config(
                         "rms_norm", "fused_add_rms_norm", dtype=dtype
                     ),
                 ).cuda().to(dtype=dtype)
@@ -135,7 +104,7 @@ class FlashInferOperatorTest(TestCase):
                 layer = RMSNorm(
                     128,
                     eps=1e-6,
-                    operator_resolver=_resolver(
+                    custom_op_config=_config(
                         "rms_norm", "fused_add_rms_norm", dtype=dtype
                     ),
                 ).cuda().to(dtype=dtype)
@@ -185,7 +154,7 @@ class FlashInferOperatorTest(TestCase):
                 layer = RMSNorm(
                     128,
                     eps=1e-6,
-                    operator_resolver=_resolver(
+                    custom_op_config=_config(
                         "rms_norm", "fused_add_rms_norm", dtype=dtype
                     ),
                 ).cuda().to(dtype=dtype)
@@ -235,7 +204,7 @@ class FlashInferOperatorTest(TestCase):
                     rotary_dim=64,
                     max_position_embeddings=128,
                     base=10000.0,
-                    operator_resolver=_resolver("rotary_embedding", dtype=dtype),
+                    custom_op_config=_config("rotary_embedding", dtype=dtype),
                 ).cuda()
                 positions = torch.tensor(
                     [0, 3, 17, 63], device="cuda", dtype=torch.int32

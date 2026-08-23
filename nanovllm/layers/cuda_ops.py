@@ -4,7 +4,6 @@ from nanovllm.layers.flashinfer_ops import (
     FLASHINFER_AVAILABLE,
     get_flashinfer_silu_and_mul,
 )
-from nanovllm.layers.operators import register_operator
 
 
 # Targeted RTX 5070 / BF16 / Qwen3-width-6144 calibration found a material
@@ -17,36 +16,28 @@ ADAPTIVE_SILU_BENCHMARK_DEVICE = "NVIDIA GeForce RTX 5070"
 
 try:
     from nanovllm import _C
-except ImportError as error:
-    raise ImportError(
-        "nanovllm._C is not built; install with "
-        "`pip install -e . --no-build-isolation`"
-    ) from error
+except ImportError as error:  # The custom extension is optional.
+    _C = None
+    CUSTOM_CUDA_IMPORT_ERROR: Exception | None = error
+else:
+    CUSTOM_CUDA_IMPORT_ERROR = None
 
 
-def _supports_cuda(*, device_type=None, dtype=None, **_):
-    return device_type == "cuda" and dtype in (torch.float16, torch.bfloat16)
+CUSTOM_CUDA_AVAILABLE = CUSTOM_CUDA_IMPORT_ERROR is None
 
 
-def _supports_adaptive_cuda(**capabilities):
-    return FLASHINFER_AVAILABLE and _supports_cuda(**capabilities)
-
-
-@register_operator(
-    "silu_and_mul", "custom_cuda", supports=_supports_cuda, priority=400
-)
-def _bind_custom_silu_and_mul(_layer):
+def get_custom_silu_and_mul():
+    if _C is None:
+        raise RuntimeError(
+            "nanovllm._C is unavailable; build the editable package first"
+        ) from CUSTOM_CUDA_IMPORT_ERROR
     return _C.forward
 
 
-@register_operator(
-    "silu_and_mul",
-    "adaptive_cuda",
-    supports=_supports_adaptive_cuda,
-    priority=500,
-)
-def _bind_adaptive_silu_and_mul(_layer):
-    custom_operation = _C.forward
+def get_adaptive_silu_and_mul():
+    if not FLASHINFER_AVAILABLE:
+        raise RuntimeError("adaptive_cuda requires FlashInfer")
+    custom_operation = get_custom_silu_and_mul()
     flashinfer_operation = get_flashinfer_silu_and_mul()
     use_benchmarked_crossover = (
         torch.cuda.get_device_name() == ADAPTIVE_SILU_BENCHMARK_DEVICE

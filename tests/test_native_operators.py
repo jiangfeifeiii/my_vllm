@@ -38,7 +38,7 @@ class NativeOperatorTest(TestCase):
     dtypes = (torch.float16, torch.bfloat16)
 
     def test_fused_add_rmsnorm_internal_fast_path_safely_falls_back(self):
-        with _eager_native_methods((RMSNorm, "add_rms_forward")):
+        with _eager_native_methods((RMSNorm, "_native_add_rms")):
             norm = RMSNorm(16, eps=1e-6).to(dtype=torch.bfloat16)
             x = torch.randn(6, 16, dtype=torch.bfloat16)
             residual = torch.randn(6, 16, dtype=torch.bfloat16)
@@ -55,7 +55,7 @@ class NativeOperatorTest(TestCase):
             )
 
     def test_silu_and_mul_value_shape_dtype_and_input_aliasing(self):
-        with _eager_native_methods((SiluAndMul, "native_forward")):
+        with _eager_native_methods((SiluAndMul, "forward_native")):
             for dtype in self.dtypes:
                 with self.subTest(dtype=dtype):
                     torch.manual_seed(7)
@@ -74,7 +74,7 @@ class NativeOperatorTest(TestCase):
                     torch.testing.assert_close(output, expected, atol=atol, rtol=rtol)
 
     def test_rmsnorm_plain_value_and_public_interface(self):
-        with _eager_native_methods((RMSNorm, "rms_forward")):
+        with _eager_native_methods((RMSNorm, "_native_rms")):
             for dtype in self.dtypes:
                 with self.subTest(dtype=dtype):
                     torch.manual_seed(11)
@@ -100,7 +100,7 @@ class NativeOperatorTest(TestCase):
                     torch.testing.assert_close(output, expected, atol=atol, rtol=rtol)
 
     def test_fused_add_rmsnorm_value_tuple_and_residual_contract(self):
-        with _eager_native_methods((RMSNorm, "add_rms_forward")):
+        with _eager_native_methods((RMSNorm, "_native_add_rms")):
             for dtype in self.dtypes:
                 with self.subTest(dtype=dtype):
                     torch.manual_seed(13)
@@ -140,7 +140,7 @@ class NativeOperatorTest(TestCase):
                     )
 
     def test_rope_value_tuple_shape_dtype_and_out_of_place_contract(self):
-        with _eager_native_methods((RotaryEmbedding, "native_forward")):
+        with _eager_native_methods((RotaryEmbedding, "forward_native")):
             for dtype in self.dtypes:
                 with self.subTest(dtype=dtype):
                     torch.manual_seed(17)

@@ -6,55 +6,60 @@ for NVIDIA CUDA with FP16 or BF16 model weights. CPU tests cover portable
 control-plane and reference behavior, but CPU inference and non-NVIDIA GPU
 backends are outside the current scope.
 
-## Operator registry
+## Ordinary operators and `CustomOp`
 
-Layers request an operation by logical name through `OperatorResolver`.
-Providers register a factory, capability predicate, and integer priority. At
-layer construction time the resolver binds one callable; there is no provider
-lookup in the token loop.
+RMSNorm, RoPE, SiLU-and-multiply, and KV-cache store inherit `CustomOp`.
+`ModelRunner` creates one `CustomOpConfig` containing the platform, model
+dtype, and public `operator_overrides`; it passes that immutable configuration
+through model construction. Each operator then binds its platform entry point
+(`forward_cuda`, `forward_cpu`, `forward_xpu`, or `forward_native`) once in its
+constructor. A CUDA entry point owns its implementation choice among in-tree
+CUDA/Triton, FlashInfer, and native Torch callables. `forward()` invokes the
+already-bound method, so there is no central registry, capability-table scan,
+or dynamic name lookup in the Forward hot path.
 
-Selection has three modes:
+Selection has three forms:
 
-1. `auto` (the default) chooses the highest-priority provider whose capability
-   predicate accepts the device and dtype.
-2. `native` considers only names beginning with `native_`, then applies the
-   same supported/highest-priority rule.
-3. An exact override, such as `flashinfer` or `custom_cuda`, selects only that
-   provider and raises an actionable error if it is missing or unsupported.
+1. `auto` (the default) lets that operator choose its supported CUDA fast path
+   and fall back to its native reference implementation when optional code is
+   unavailable.
+2. `native` selects the operator's platform-native path. Exact native names
+   such as `native_torch` and `native_triton` remain available where supported.
+3. An exact override such as `flashinfer`, `custom_cuda`, or `adaptive_cuda`
+   requests that implementation and raises an actionable error when it is
+   unavailable or incompatible.
 
-Optional provider modules are imported before model construction. Import or
-binary-loading failures are recorded, native providers remain available, and
-`auto` can fall back. An explicitly requested unavailable provider fails
-instead of changing the requested implementation.
+Optional CUDA modules are probed before model construction. Import or binary-
+loading failures are recorded so `auto` can fall back, while an explicitly
+requested unavailable implementation fails instead of silently changing the
+request. The current implementation choices are intentionally small:
 
-The current registrations are intentionally minimal:
-
-| Logical operator | Provider | Priority | Implementation and support |
-|---|---:|---:|---|
-| `silu_and_mul` | `native_torch` | 100 | `torch.nn.functional.silu` + multiply |
-| `silu_and_mul` | `flashinfer` | 200 | FlashInfer, CUDA FP16/BF16 |
-| `silu_and_mul` | `custom_cuda` | 400 | In-tree `nanovllm._C`, CUDA FP16/BF16 |
-| `silu_and_mul` | `adaptive_cuda` | 500 | Shape/device dispatch between FlashInfer and the in-tree CUDA kernel |
-| `rms_norm` | `native_torch` | 100 | PyTorch reference path |
-| `rms_norm` | `flashinfer` | 200 | FlashInfer, CUDA FP16/BF16 |
-| `fused_add_rms_norm` | `native_torch` | 100 | PyTorch reference path |
-| `fused_add_rms_norm` | `flashinfer` | 200 | FlashInfer, CUDA FP16/BF16 |
-| `rotary_embedding` | `native_torch` | 100 | PyTorch NeoX-style RoPE |
-| `rotary_embedding` | `flashinfer` | 200 | FlashInfer, CUDA FP16/BF16 |
-| `kv_cache_store` | `native_triton` | 300 | In-tree Triton NHD cache store |
+| Logical operator | Implementation | Implementation and support |
+|---|---|---|
+| `silu_and_mul` | `native_torch` | `torch.nn.functional.silu` + multiply |
+| `silu_and_mul` | `flashinfer` | FlashInfer, CUDA FP16/BF16 |
+| `silu_and_mul` | `custom_cuda` | In-tree `nanovllm._C`, CUDA FP16/BF16 |
+| `silu_and_mul` | `adaptive_cuda` | Shape/device dispatch between FlashInfer and the in-tree CUDA kernel |
+| `rms_norm` | `native_torch` | PyTorch reference path |
+| `rms_norm` | `flashinfer` | FlashInfer, CUDA FP16/BF16 |
+| `fused_add_rms_norm` | `native_torch` | PyTorch reference path |
+| `fused_add_rms_norm` | `flashinfer` | FlashInfer, CUDA FP16/BF16 |
+| `rotary_embedding` | `native_torch` | PyTorch NeoX-style RoPE |
+| `rotary_embedding` | `flashinfer` | FlashInfer, CUDA FP16/BF16 |
+| `kv_cache_store` | `native_triton` | In-tree Triton NHD cache store |
 
 Thus, on a supported CUDA FP16/BF16 installation, `auto` binds one adaptive
-SiLU callable at layer construction. On the measured RTX 5070, BF16 Qwen3
-width 6144 uses the in-tree CUDA kernel below 128 rows and FlashInfer from 128
-rows onward. This is a targeted serving heuristic: measurements show a
-material custom-kernel advantage for decode-sized batches and a FlashInfer
-advantage as token parallelism grows, while the exact boundary is sensitive to
-clock/workload conditions. The rule is therefore not extrapolated: other
-devices, dtypes, and FlashInfer-compatible widths use FlashInfer, while
-incompatible layouts fall back to the in-tree CUDA kernel. This adds only a
-host-side shape branch in the token loop, not a registry lookup.
+SiLU callable at construction. On the measured RTX 5070, BF16 Qwen3 width 6144
+uses the in-tree CUDA kernel below 128 rows and FlashInfer from 128 rows onward.
+This is a targeted serving heuristic: measurements show a material custom-
+kernel advantage for decode-sized batches and a FlashInfer advantage as token
+parallelism grows, while the exact boundary is sensitive to clock/workload
+conditions. The rule is therefore not extrapolated: other devices, dtypes, and
+FlashInfer-compatible widths use FlashInfer, while incompatible layouts fall
+back to the in-tree CUDA kernel. This adds only an implementation-local host-
+side shape branch in the token loop.
 
-Normalization and RoPE use FlashInfer. The public fused-add RMSNorm provider
+Normalization and RoPE use FlashInfer. The public fused-add RMSNorm operation
 keeps its out-of-place contract, while Qwen3 calls an internal in-place form
 only where both incoming tensor values are dead, eliminating two clones per
 eligible normalization. KV-cache store remains the existing Triton kernel:
@@ -70,8 +75,8 @@ broader model/RNG semantics work and is outside this low-risk optimization.
 - `plan(context)` runs once per scheduled batch and prepares shared metadata.
 - `forward(q, k, v, k_cache, v_cache, context)` runs once per attention layer.
 
-Each layer first stores its newly produced K/V through the selected
-`kv_cache_store` provider. The backend then reads the paged cache, so a mixed
+Each layer first stores its newly produced K/V through the bound
+`kv_cache_store` implementation. The backend then reads the paged cache, so a mixed
 batch can attend to K/V written earlier in the same layer invocation.
 
 ### FlashInfer backend
@@ -217,7 +222,7 @@ warning and falls back to Eager; a fresh process is required to capture again.
 Initialization follows this order:
 
 ```text
-load extensions/providers and run an Eager model warmup
+load optional ordinary-operator implementations and run an Eager model warmup
     -> allocate per-bucket graph wrappers and fixed buffers
     -> allocate the KV-cache pool
     -> warm and capture every retained bucket
@@ -225,7 +230,7 @@ load extensions/providers and run an Eager model warmup
 
 Capture uses exact-size synthetic decode inputs and a non-writing slot mapping.
 Those startup inputs are not dummy runtime requests and are not graph-bucket
-padding. Imports, provider resolution, kernel preparation, workspace creation,
+padding. Imports, CustomOp construction-time binding, kernel preparation, workspace creation,
 and dynamic tensor allocation all happen before capture.
 
 At serving time the selected paths are:
@@ -377,7 +382,7 @@ future matching request.
 ## Correctness and measurement rules
 
 - Model execution is NVIDIA CUDA FP16/BF16 only. Unsupported dtypes or an
-  unavailable explicitly selected provider fail early.
+  unavailable explicitly selected implementation fail early.
 - FlashInfer page metadata is CUDA `int32`, one-dimensional CSR metadata; the
   decode suffix must have query length one for every sequence.
 - Prefix hashes are candidate keys, not proof of equality: token contents,

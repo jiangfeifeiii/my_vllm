@@ -73,7 +73,8 @@ def build_chat_prompt(tokenizer, system_prompt: str, user_prompt: str) -> str:
     )
 
 
-def collect_provider_bindings(llm) -> dict[str, set[str]]:
+def collect_operator_bindings(llm) -> dict[str, set[str]]:
+    """Read compatibility diagnostics for construction-bound CustomOps."""
     bindings: dict[str, set[str]] = {
         operator: set() for operator in OPERATOR_OVERRIDES
     }
@@ -93,7 +94,7 @@ def collect_provider_bindings(llm) -> dict[str, set[str]]:
 
 def print_runtime_configuration(llm) -> None:
     config = llm.config
-    bindings = collect_provider_bindings(llm)
+    bindings = collect_operator_bindings(llm)
     attention_backend = llm.model_runner.attention_backend
     print("\nEnabled runtime configuration")
     print(f"  attention backend : {type(llm.model_runner.attention_backend).__name__}")
@@ -119,12 +120,13 @@ def print_runtime_configuration(llm) -> None:
         f"  graph extra memory: "
         f"{graph_stats['extra_memory_bytes'] / 2**20:.2f} MiB"
     )
-    for operator, expected_provider in OPERATOR_OVERRIDES.items():
+    for operator, expected_implementation in OPERATOR_OVERRIDES.items():
         actual = bindings[operator]
         print(f"  {operator:<19}: {', '.join(sorted(actual))}")
-        if actual != {expected_provider}:
+        if actual != {expected_implementation}:
             raise RuntimeError(
-                f"{operator} expected provider {expected_provider!r}, got {actual!r}"
+                f"{operator} expected implementation "
+                f"{expected_implementation!r}, got {actual!r}"
             )
 
 

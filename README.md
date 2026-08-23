@@ -8,9 +8,9 @@ tensor parallelism, pluggable operators, and phase-specialized attention.
 The production inference path currently targets NVIDIA CUDA GPUs and model
 weights in FP16 or BF16. Linear and tensor-parallel projection layers
 intentionally remain on `torch.nn.functional.linear`; GEMM is not part of the
-operator registry.
+ordinary-operator `CustomOp` layer.
 
-See [Architecture](docs/architecture.md) for the provider rules, attention
+See [Architecture](docs/architecture.md) for the ordinary-operator dispatch rules, attention
 backends, cache layout, and scheduler invariants.
 
 ## Installation
@@ -183,7 +183,7 @@ engines.
 
 For a runnable example that explicitly enables FlashInfer attention, 16-token
 KV pages, chunked prefill, cache-aware LPM, adaptive SiLU dispatch, and the
-FlashInfer normalization/RoPE providers, run:
+FlashInfer normalization/RoPE implementations, run:
 
 ```bash
 # Eager (also the example's default)
@@ -205,9 +205,12 @@ fallback hit counts. Its default workload includes a resumed long prefill next
 to active decode requests, so the `MIXED` route is exercised. Add `--debug` to
 pause in `pdb` immediately before the first generation call.
 
-Operator selection defaults to `auto`: the highest-priority supported
-provider is selected for each registered operator. A provider can be pinned
-without changing layer code:
+Ordinary operators inherit `CustomOp`. During model construction, each module
+binds its platform entry point (`forward_cuda`, `forward_cpu`, `forward_xpu`,
+or `forward_native`) and selects its concrete implementation. There is no
+central implementation registry or name lookup in the Forward hot path.
+`auto` is the default; an implementation can still be pinned through the
+public `operator_overrides` option without changing layer code:
 
 ```python
 llm = LLM(
@@ -222,19 +225,22 @@ llm = LLM(
 )
 ```
 
-`native` is an alias for the highest-priority supported provider whose name
-starts with `native_`; exact names such as `native_torch`, `native_triton`,
+`native` selects the operator's platform-native implementation; exact names
+such as `native_torch`, `native_triton`,
 `flashinfer`, `custom_cuda`, and `adaptive_cuda` are also accepted. On the
 measured RTX 5070 BF16/Qwen3 width-6144 path, adaptive dispatch uses the custom
 kernel below 128 rows and FlashInfer from 128 rows; other compatible devices,
 dtypes, and widths default to FlashInfer instead of extrapolating that targeted
-serving heuristic.
+serving heuristic. Existing fields such as `provider_name`,
+`rms_provider_name`, `add_rms_provider_name`, and `kv_store_provider_name`
+remain available as diagnostic names for the bound implementations.
 
 ### Legacy rollback
 
-The attention backend is independent of the operator registry. To restore the
-original FlashAttention paged path and native registered operators, select it
-explicitly and use a block size divisible by 256:
+The attention backend is independent of ordinary-operator `CustomOp`
+dispatch. To restore the original FlashAttention paged path and native
+ordinary-operator implementations, select it explicitly and use a block size
+divisible by 256:
 
 ```python
 llm = LLM(
@@ -252,7 +258,8 @@ llm = LLM(
 ```
 
 The legacy path still requires `flash-attn`; it is a rollback path for
-attention and provider selection, not a CPU inference mode.
+attention and ordinary-operator implementation selection, not a CPU inference
+mode.
 
 ## Tests
 
@@ -267,7 +274,7 @@ Focused operator, scheduler, and attention coverage:
 
 ```bash
 python -m pytest -q \
-  tests/test_operator_registry.py \
+  tests/test_custom_op_dispatch.py \
   tests/test_native_operators.py \
   tests/test_block_manager_baseline.py \
   tests/test_block_manager_chunked.py \

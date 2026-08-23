@@ -1,13 +1,7 @@
 from functools import lru_cache
 import torch
-from torch import nn
 
-from nanovllm.layers.operators import OperatorResolver, register_operator
-
-
-@register_operator("rotary_embedding", "native_torch", priority=100)
-def _bind_native_rotary_embedding(layer):
-    return layer.native_forward
+from nanovllm.layers.custom_op import CustomOp, CustomOpConfig
 
 
 def apply_rotary_emb(
@@ -21,7 +15,7 @@ def apply_rotary_emb(
     return torch.cat((y1, y2), dim=-1).to(x.dtype)
 
 
-class RotaryEmbedding(nn.Module):
+class RotaryEmbedding(CustomOp):
 
     def __init__(
         self,
@@ -29,9 +23,9 @@ class RotaryEmbedding(nn.Module):
         rotary_dim: int,
         max_position_embeddings: int,
         base: float,
-        operator_resolver: OperatorResolver | None = None,
+        custom_op_config: CustomOpConfig | None = None,
     ) -> None:
-        super().__init__()
+        super().__init__(custom_op_config)
         self.head_size = head_size
         assert rotary_dim == head_size
         inv_freq = 1.0 / (base**(torch.arange(0, rotary_dim, 2, dtype=torch.float) / rotary_dim))
@@ -41,13 +35,10 @@ class RotaryEmbedding(nn.Module):
         sin = freqs.sin()
         cache = torch.cat((cos, sin), dim=-1).unsqueeze_(1)
         self.register_buffer("cos_sin_cache", cache, persistent=False)
-        resolver = operator_resolver or OperatorResolver()
-        self.provider_name, self.forward_impl = resolver.bind(
-            "rotary_embedding", self, head_size=head_size
-        )
+        self.provider_name, self.forward_impl = self._select_cuda_impl()
 
     @torch.compile
-    def native_forward(
+    def forward_native(
         self,
         positions: torch.Tensor,
         query: torch.Tensor,
@@ -59,13 +50,66 @@ class RotaryEmbedding(nn.Module):
         key = apply_rotary_emb(key, cos, sin)
         return query, key
 
-    def forward(
+    def forward_cuda(
         self,
         positions: torch.Tensor,
         query: torch.Tensor,
         key: torch.Tensor,
     ) -> tuple[torch.Tensor, torch.Tensor]:
         return self.forward_impl(positions, query, key)
+
+    def _select_cuda_impl(self):
+        implementation = self.custom_op_config.implementation_for(
+            "rotary_embedding"
+        )
+        supported = {"auto", "native", "native_torch", "flashinfer"}
+        if implementation not in supported:
+            available = ", ".join(sorted(supported))
+            raise ValueError(
+                "unsupported 'rotary_embedding' implementation "
+                f"{implementation!r}; available: {available}"
+            )
+        if (
+            self.platform != "cuda"
+            and implementation not in ("auto", "native", "native_torch")
+        ):
+            raise RuntimeError(
+                f"{implementation!r} for 'rotary_embedding' requires CUDA"
+            )
+        if implementation in ("native", "native_torch"):
+            return "native_torch", self.forward_native
+        if self.platform != "cuda":
+            return "native_torch", self.forward_native
+
+        from nanovllm.layers import flashinfer_ops
+
+        dtype = self.custom_op_config.dtype
+        flashinfer_available = (
+            flashinfer_ops.FLASHINFER_AVAILABLE
+            and dtype in (torch.float16, torch.bfloat16, None)
+        )
+        if implementation == "flashinfer" and not flashinfer_available:
+            if dtype not in (torch.float16, torch.bfloat16, None):
+                raise RuntimeError(
+                    "'flashinfer' for 'rotary_embedding' does not "
+                    f"support dtype {dtype}"
+                )
+        if implementation == "auto" and not flashinfer_available:
+            return "native_torch", self.forward_native
+
+        operation = flashinfer_ops.get_flashinfer_rotary_embedding()
+
+        def forward(positions, query, key):
+            return operation(
+                positions,
+                query,
+                key,
+                self.head_size,
+                self.cos_sin_cache.squeeze(1),
+                is_neox=True,
+            )
+
+        return "flashinfer", forward
 
 
 @lru_cache(1)
@@ -74,14 +118,14 @@ def _get_rope(
     rotary_dim: int,
     max_position: int,
     base: float,
-    operator_resolver: OperatorResolver,
+    custom_op_config: CustomOpConfig,
 ):
     rotary_emb = RotaryEmbedding(
         head_size,
         rotary_dim,
         max_position,
         base,
-        operator_resolver=operator_resolver,
+        custom_op_config=custom_op_config,
     )
     return rotary_emb
 
@@ -92,7 +136,7 @@ def get_rope(
     max_position: int,
     base: float | None,
     rope_scaling: dict | None = None,
-    operator_resolver: OperatorResolver | None = None,
+    custom_op_config: CustomOpConfig | None = None,
 ):
     if rope_scaling is not None:
         rope_type = rope_scaling.get("rope_type", rope_scaling.get("type", "default"))
@@ -101,5 +145,7 @@ def get_rope(
         base = rope_scaling.get("rope_theta", base)
     if base is None:
         raise ValueError("RoPE theta is missing from the model configuration")
-    resolver = operator_resolver or OperatorResolver()
-    return _get_rope(head_size, rotary_dim, max_position, float(base), resolver)
+    dispatch = custom_op_config or CustomOpConfig()
+    return _get_rope(
+        head_size, rotary_dim, max_position, float(base), dispatch
+    )

@@ -5,8 +5,8 @@ import torch
 import torch.nn.functional as F
 
 from nanovllm.layers.activation import SiluAndMul
+from nanovllm.layers.custom_op import CustomOpConfig
 from nanovllm.layers.flashinfer_ops import FLASHINFER_AVAILABLE
-from nanovllm.layers.operators import OperatorResolver, REGISTRY
 
 
 @pytest.fixture(scope="module")
@@ -22,8 +22,7 @@ def custom_ops():
 
 
 @pytest.fixture(scope="module")
-def registered_custom_provider(custom_ops):
-    # Importing the provider modules is the production registration path.
+def custom_cuda_ops(custom_ops):
     import_module("nanovllm.layers.flashinfer_ops")
     return import_module("nanovllm.layers.cuda_ops")
 
@@ -68,37 +67,24 @@ def test_custom_silu_and_mul_rejects_unsupported_inputs(
         custom_ops.forward(input_factory())
 
 
-def test_custom_provider_priority_and_auto_selection(registered_custom_provider):
-    providers = {
-        provider.name: provider
-        for provider in REGISTRY.providers("silu_and_mul")
-    }
-
-    assert {
-        "native_torch",
-        "flashinfer",
-        "custom_cuda",
-        "adaptive_cuda",
-    } <= providers.keys()
-    assert providers["custom_cuda"].priority == 400
-    assert providers["adaptive_cuda"].priority == 500
+def test_custom_op_auto_selects_best_available_cuda_implementation(
+    custom_cuda_ops,
+):
     for dtype in (torch.float16, torch.bfloat16):
-        selected = REGISTRY.resolve(
-            "silu_and_mul",
-            device_type="cuda",
-            dtype=dtype,
+        layer = SiluAndMul(
+            CustomOpConfig(platform="cuda", dtype=dtype)
         )
         expected = "adaptive_cuda" if FLASHINFER_AVAILABLE else "custom_cuda"
-        assert selected.name == expected
+        assert layer.provider_name == expected
 
 
 def test_adaptive_provider_dispatches_on_token_threshold(
-    registered_custom_provider,
+    custom_cuda_ops,
     monkeypatch,
 ):
     if not FLASHINFER_AVAILABLE:
         pytest.skip("FlashInfer is required for adaptive dispatch")
-    cuda_ops = registered_custom_provider
+    cuda_ops = custom_cuda_ops
     calls = []
 
     def custom_operation(x):
@@ -120,12 +106,7 @@ def test_adaptive_provider_dispatches_on_token_threshold(
         "get_device_name",
         lambda *_: cuda_ops.ADAPTIVE_SILU_BENCHMARK_DEVICE,
     )
-    provider = next(
-        item
-        for item in REGISTRY.providers("silu_and_mul")
-        if item.name == "adaptive_cuda"
-    )
-    forward = provider.callable(None)
+    forward = cuda_ops.get_adaptive_silu_and_mul()
     threshold = cuda_ops.ADAPTIVE_SILU_FLASHINFER_MIN_TOKENS
     width = cuda_ops.ADAPTIVE_SILU_BENCHMARK_WIDTH
 
@@ -139,12 +120,12 @@ def test_adaptive_provider_dispatches_on_token_threshold(
 
 
 def test_adaptive_provider_does_not_extrapolate_measured_crossover(
-    registered_custom_provider,
+    custom_cuda_ops,
     monkeypatch,
 ):
     if not FLASHINFER_AVAILABLE:
         pytest.skip("FlashInfer is required for adaptive dispatch")
-    cuda_ops = registered_custom_provider
+    cuda_ops = custom_cuda_ops
     calls = []
 
     def custom_operation(x):
@@ -161,11 +142,6 @@ def test_adaptive_provider_does_not_extrapolate_measured_crossover(
         "get_flashinfer_silu_and_mul",
         lambda: flashinfer_operation,
     )
-    provider = next(
-        item
-        for item in REGISTRY.providers("silu_and_mul")
-        if item.name == "adaptive_cuda"
-    )
     width = cuda_ops.ADAPTIVE_SILU_BENCHMARK_WIDTH
 
     monkeypatch.setattr(
@@ -173,7 +149,7 @@ def test_adaptive_provider_does_not_extrapolate_measured_crossover(
         "get_device_name",
         lambda *_: cuda_ops.ADAPTIVE_SILU_BENCHMARK_DEVICE,
     )
-    measured_device_forward = provider.callable(None)
+    measured_device_forward = cuda_ops.get_adaptive_silu_and_mul()
     measured_device_forward(torch.empty(1, width, dtype=torch.float16))
     measured_device_forward(torch.empty(1, width + 16, dtype=torch.bfloat16))
     measured_device_forward(torch.empty(1, 10, dtype=torch.bfloat16))
@@ -183,7 +159,7 @@ def test_adaptive_provider_does_not_extrapolate_measured_crossover(
         "get_device_name",
         lambda *_: "unmeasured CUDA device",
     )
-    unmeasured_device_forward = provider.callable(None)
+    unmeasured_device_forward = cuda_ops.get_adaptive_silu_and_mul()
     unmeasured_device_forward(torch.empty(1, width, dtype=torch.bfloat16))
 
     assert calls == [
@@ -196,14 +172,14 @@ def test_adaptive_provider_does_not_extrapolate_measured_crossover(
 
 @pytest.mark.parametrize("dtype", [torch.float16, torch.bfloat16])
 def test_custom_provider_registered_layer_matches_torch(
-    registered_custom_provider, dtype
+    custom_cuda_ops, dtype
 ):
-    resolver = OperatorResolver(
-        overrides={"silu_and_mul": "custom_cuda"},
-        device_type="cuda",
+    custom_op_config = CustomOpConfig(
+        platform="cuda",
         dtype=dtype,
+        overrides={"silu_and_mul": "custom_cuda"},
     )
-    layer = SiluAndMul(operator_resolver=resolver)
+    layer = SiluAndMul(custom_op_config)
     torch.manual_seed(29)
     input_tensor = torch.randn(5, 192, device="cuda", dtype=dtype)
     original = input_tensor.clone()
@@ -221,21 +197,21 @@ def test_custom_provider_registered_layer_matches_torch(
 
 @pytest.mark.parametrize("rows", [8, 128])
 def test_adaptive_provider_registered_layer_matches_torch(
-    registered_custom_provider,
+    custom_cuda_ops,
     rows,
 ):
     if not FLASHINFER_AVAILABLE:
         pytest.skip("FlashInfer is required for adaptive dispatch")
-    resolver = OperatorResolver(
-        overrides={"silu_and_mul": "adaptive_cuda"},
-        device_type="cuda",
+    custom_op_config = CustomOpConfig(
+        platform="cuda",
         dtype=torch.bfloat16,
+        overrides={"silu_and_mul": "adaptive_cuda"},
     )
-    layer = SiluAndMul(operator_resolver=resolver)
+    layer = SiluAndMul(custom_op_config)
     torch.manual_seed(31 + rows)
     input_tensor = torch.randn(
         rows,
-        registered_custom_provider.ADAPTIVE_SILU_BENCHMARK_WIDTH,
+        custom_cuda_ops.ADAPTIVE_SILU_BENCHMARK_WIDTH,
         device="cuda",
         dtype=torch.bfloat16,
     )
